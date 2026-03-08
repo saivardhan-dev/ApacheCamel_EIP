@@ -1,0 +1,5 @@
+{
+  "PAYMENT": "payment.queue",
+  "SHIPPING": "shipping.queue",
+  "INVENTORY": "inventory.queue"
+}
