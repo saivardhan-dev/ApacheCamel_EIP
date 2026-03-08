@@ -4,7 +4,7 @@ Camel = Integration framework implemented in Java designed to simplify the conne
 
 Apache Camel is a Java integration framework that implements Enterprise Integration Patterns to route, transform, and process messages between systems.
 
-four core components that process every message:
+Core components that process every message:
 
 	Exchange(Message, body, header) → Processor(Modifications) → Route Engine(Acts like a controller)
 
