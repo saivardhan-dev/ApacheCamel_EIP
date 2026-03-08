@@ -6,12 +6,14 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
+        <module name="EHCache_CBR_EIP" />
         <module name="Splitter_XSLT_EIP" />
       </profile>
     </annotationProcessing>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="EHCache_CBR_EIP" options="-parameters" />
       <module name="Splitter_XSLT_EIP" options="-parameters" />
     </option>
   </component>

@@ -28,6 +28,8 @@ public class OrdersRoute extends RouteBuilder {
                 .log("Applying XSLT transformation")
                 .to("xslt:classpath:xslt/orderXmlToJson.xsl")
                 .log("Transformation Route - JSON Output: ${body}")
+                .setBody(simple("${body} , \"Enhanced message\""))
+                .log("Enhanced Message Before Exit: ${body}")
                 .to("direct:exitRoute");
 
         from("direct:exitRoute")

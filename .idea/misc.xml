@@ -5,6 +5,7 @@
     <option name="originalFiles">
       <list>
         <option value="$PROJECT_DIR$/Splitter_XSLT_EIP/pom.xml" />
+        <option value="$PROJECT_DIR$/EHCache_CBR_EIP/pom.xml" />
       </list>
     </option>
   </component>
