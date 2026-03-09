@@ -71,10 +71,14 @@ Camel supports 300+ integration connectors. So Camel can connect almost any syst
 <img width="977" height="655" alt="pes-and Fiters" src="https://github.com/user-attachments/assets/02d92a4c-6afd-49c1-b923-14ad61bd3c45" />
 
 1. Overall Idea of the Integration Pattern Language:
-The central concept is: Application A → Messaging System → Application B
-Instead of applications communicating directly, they use an integration layer built on messaging patterns.
+   
+The central concept is:
+
+ Application A → Messaging System → Application B
+
+Instead of applications communicating directly, we use an integration layer built on messaging patterns.
 The process typically follows:
-***
+
 	Application A
    	  	  ↓
 	Messaging Endpoint
@@ -90,7 +94,7 @@ The process typically follows:
 	Messaging Endpoint
 	      ↓
 	Application B
-***
+
 Each part follows a specific integration pattern.
 
 3. Message Construction: This section defines how messages are created and structured before they are sent.
