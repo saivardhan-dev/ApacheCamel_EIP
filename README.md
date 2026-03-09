@@ -133,7 +133,7 @@ An Order Service sends orders to the integration system. 
 The integration system should:
 
 	1.	Entry – receive the order
-	2.	CBR – check if it is a specific field(domestic or international)
+	2.	CBR – check if it is a specific field(domestic or international) and route to the respective queue
 	3.	Transformation – convert JSON → XML
 	4.	Splitter – process each item separately
 	5.	Exit – send each item to a queue for processing
