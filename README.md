@@ -28,6 +28,9 @@ Core components that process every message:
  		  .to("jms:queue:inventory");
       
 	Internally Camel converts this route into a chain of processors.
+
+ Internal Message Flow: When a message arrives, Camel processes it like this:
+
 	Execution pipeline:
   
 		Route Engine
@@ -41,8 +44,6 @@ Core components that process every message:
 
     
 	Each processor receives the same Exchange object.
-
-* Internal Message Flow: When a message arrives, Camel processes it like this:
   
 The Exchange moves through each processor step-by-step.
 
