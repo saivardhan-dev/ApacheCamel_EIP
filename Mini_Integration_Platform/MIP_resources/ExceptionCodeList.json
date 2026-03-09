@@ -1,0 +1,7 @@
+{
+"ErrorCodes":[
+{"Exception":"JsonParsingException","ExceptionCode":"ExceptionCode1"},
+{"Exception":"NumberFormatException","ExceptionCode":"ExceptionCode2"},
+{"Exception":"Exception","ExceptionCode":"ExceptionCode3"}
+]
+}

@@ -1,0 +1,22 @@
+{
+"OriginalMessageId":"****",
+"SourcePutTimestamp":"***",
+"EventTimestamp":"*****",
+"MessageId":"****",
+"Headers":{
+"auditQueue":"GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
+"RoutingSlip":{
+ "CountryCode":"WW",
+         "ScenarioName":"Scenario1",
+         "InstanceId":1
+},
+"RouteInfo":{
+               "RouteName":"Route1",
+               "source":"GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
+               "target":"CORE.ENTRY.SERVICE.IN",
+			   "startTimestamp":"*****", 
+			   "endTimestamp":"*****"
+            },
+},			
+"Payload":"****"
+}
