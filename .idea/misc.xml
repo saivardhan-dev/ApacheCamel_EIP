@@ -6,6 +6,7 @@
       <list>
         <option value="$PROJECT_DIR$/Splitter_XSLT_EIP/pom.xml" />
         <option value="$PROJECT_DIR$/EHCache_CBR_EIP/pom.xml" />
+        <option value="$PROJECT_DIR$/Mini_Integration_Platform/pom.xml" />
       </list>
     </option>
   </component>
