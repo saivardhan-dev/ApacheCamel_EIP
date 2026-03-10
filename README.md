@@ -28,6 +28,9 @@ Core components that process every message:
  		  .to("jms:queue:inventory");
       
 	Internally Camel converts this route into a chain of processors.
+
+ Internal Message Flow: When a message arrives, Camel processes it like this:
+
 	Execution pipeline:
   
 		Route Engine
@@ -41,8 +44,6 @@ Core components that process every message:
 
     
 	Each processor receives the same Exchange object.
-
-* Internal Message Flow: When a message arrives, Camel processes it like this:
   
 The Exchange moves through each processor step-by-step.
 
@@ -133,7 +134,7 @@ An Order Service sends orders to the integration system. 
 The integration system should:
 
 	1.	Entry – receive the order
-	2.	CBR – check if it is a specific field(domestic or international)
+	2.	CBR – check if it is a specific field(domestic or international) and route to the respective queue
 	3.	Transformation – convert JSON → XML
 	4.	Splitter – process each item separately
 	5.	Exit – send each item to a queue for processing
