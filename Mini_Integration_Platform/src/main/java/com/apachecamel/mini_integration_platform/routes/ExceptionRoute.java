@@ -1,35 +1,51 @@
 package com.apachecamel.mini_integration_platform.routes;
 
+import com.apachecamel.mini_integration_platform.service.persistence.ExceptionPersistenceService;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.builder.RouteBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * ExceptionRoute
+ * ExceptionRoute  (Task 6 — updated)
  *
- * Consumes exception messages from COMMON.EXCEPTION.SERVICE.IN.
- * Default value on @Value ensures the bean constructs safely even if
- * properties are resolved late.
+ * Consumes exception messages from COMMON.EXCEPTION.SERVICE.IN and persists
+ * each one to the MongoDB "exceptions" collection via ExceptionPersistenceService.
  *
- * Task 6: replace the process() body with a persistence call.
+ * Flow:
+ *   COMMON.EXCEPTION.SERVICE.IN
+ *       ↓
+ *   Read body (Exception JSON string)
+ *       ↓
+ *   ExceptionPersistenceService.save()
+ *       ↓
+ *   MongoDB → "exceptions" collection → new ExceptionDocument stored
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ExceptionRoute extends RouteBuilder {
+
+    private final ExceptionPersistenceService exceptionPersistenceService;
 
     @Value("${app.queue.exception:COMMON.EXCEPTION.SERVICE.IN}")
     private String exceptionQueue;
 
     @Override
     public void configure() {
+        log.info("[ExceptionRoute] Consumer started on queue='{}'", exceptionQueue);
+
         from("activemq:" + exceptionQueue)
                 .routeId("exception-consumer-route")
-                .log("EXCEPTION RECEIVED: ${body}")
+                .log("EXCEPTION RECEIVED → persisting to MongoDB")
+
+                // ── Task 6: Parse JSON and save to MongoDB "exceptions" collection ─
                 .process(exchange -> {
                     String body = exchange.getIn().getBody(String.class);
-                    log.error("[ExceptionRoute] Exception message received:\n{}", body);
-                    // Task 6 extension point: .bean(ExceptionPersistenceService.class, "save")
-                });
+                    exceptionPersistenceService.save(body);
+                })
+
+                .log("EXCEPTION PERSISTED → MongoDB exceptions collection");
     }
 }

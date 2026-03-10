@@ -1,35 +1,51 @@
 package com.apachecamel.mini_integration_platform.routes;
 
+import com.apachecamel.mini_integration_platform.service.persistence.AuditPersistenceService;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.builder.RouteBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * AuditRoute
+ * AuditRoute  (Task 6 — updated)
  *
- * Consumes audit messages from COMMON.AUDIT.SERVICE.IN.
- * Default value on @Value ensures the bean constructs safely even if
- * properties are resolved late.
+ * Consumes audit messages from COMMON.AUDIT.SERVICE.IN and persists
+ * each one to the MongoDB "audits" collection via AuditPersistenceService.
  *
- * Task 6: replace the process() body with a persistence call.
+ * Flow:
+ *   COMMON.AUDIT.SERVICE.IN
+ *       ↓
+ *   Read body (Audit JSON string)
+ *       ↓
+ *   AuditPersistenceService.save()
+ *       ↓
+ *   MongoDB → "audits" collection → new AuditDocument stored
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class AuditRoute extends RouteBuilder {
+
+    private final AuditPersistenceService auditPersistenceService;
 
     @Value("${app.queue.audit:COMMON.AUDIT.SERVICE.IN}")
     private String auditQueue;
 
     @Override
     public void configure() {
+        log.info("[AuditRoute] Consumer started on queue='{}'", auditQueue);
+
         from("activemq:" + auditQueue)
                 .routeId("audit-consumer-route")
-                .log("AUDIT RECEIVED: ${body}")
+                .log("AUDIT RECEIVED → persisting to MongoDB")
+
+                // ── Task 6: Parse JSON and save to MongoDB "audits" collection ─────
                 .process(exchange -> {
                     String body = exchange.getIn().getBody(String.class);
-                    log.info("[AuditRoute] Audit message received:\n{}", body);
-                    // Task 6 extension point: .bean(AuditPersistenceService.class, "save")
-                });
+                    auditPersistenceService.save(body);
+                })
+
+                .log("AUDIT PERSISTED → MongoDB audits collection");
     }
 }
