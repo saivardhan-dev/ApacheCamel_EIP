@@ -26,7 +26,7 @@ import java.time.Instant;
  * │ RoutingSlip_CountryCode  │ e.g. "WW"                                      │
  * │ RoutingSlip_ScenarioName │ e.g. "Scenario1"                               │
  * │ RoutingSlip_InstanceId   │ e.g. 1                                         │
- * │ ScenarioSourceQueue      │ e.g. "GATEWAY.ENTRY.WW.SCENARIO1.1.IN"        │
+ * │ ScenarioSourceQueue      │ e.g. "GATEWAY.ENTRY.WW.SCENARIO1.1.IN"         │
  * │ CurrentRouteName         │ "Route1"                                       │
  * │ RouteSource              │ Route1's source queue                          │
  * │ RouteTarget              │ Route1's target queue (CORE.ENTRY.SERVICE.IN)  │
