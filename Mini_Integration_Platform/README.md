@@ -1,27 +1,38 @@
+Integration platforms exist because modern enterprises have dozens of systems built on different technologies that all need to talk to each other. Without a central integration layer, you end up with point-to-point spaghetti — exponentially growing connections, no visibility, tight coupling, and no resilience. An integration platform like IBM ACE solves this by acting as a central hub that handles routing, transformation, protocol mediation, guaranteed delivery, security, and monitoring in one place. Every system only needs to know about the integration platform — not about every other system in the enterprise. Our Mini Integration Platform demonstrates these same principles at a smaller scale using Apache Camel, ActiveMQ, EhCache, and MongoDB.
+
 Architecture Flow: 
 ```text
-Scenarios.json + ExceptionCodeList.json 
-	↓ 
-EhCache (loaded at startup) 
-	↓ 
-Dynamic Source Queues created per scenario 
-	↓ 
-Route-1: Message received 
-		→ Tag with OriginalMessageID + SourcePutTimestamp 
-		→ Store routing info in headers 
-		→ Send Audit record 
-		→ COMMON.AUDIT.SERVICE.IN 
-	↓ 
-Route-2: Message processed 
-		→ Read headers from Route-1 
-		→ Execute business logic 
-		→ Send Audit record 
-		→ COMMON.AUDIT.SERVICE.IN 
-	↓ 
-(If error at any point) 
-		→ Send to COMMON.EXCEPTION.SERVICE.IN
-	↓ 
-GATEWAY.EXIT.WW.SCENARIO1.1.OUT
+Producer
+   │
+   ▼
+GATEWAY.ENTRY.WW.SCENARIO1.1.IN
+   │
+   ▼
+Route-1 (ScenarioEntryRoute)
+   │  ScenarioProcessor → stamp headers
+   │  .to(CORE.ENTRY.SERVICE.IN) ✅
+   │
+   ├──► wireTap(audit) ──► COMMON.AUDIT.SERVICE.IN ──► MongoDB "audits" { Route1 }
+   │         async
+   ▼
+CORE.ENTRY.SERVICE.IN
+   │
+   ▼
+CoreProcessingRoute
+   │  EhCache lookup → LegIndex++ → update RouteInfo
+   │  MessageValidatorProcessor
+   │       │
+   │  type=ORDER ──► .toD(GATEWAY.EXIT) ✅
+   │                      │
+   │                      ├──► wireTap(audit) ──► MongoDB "audits" { Route2 }
+   │                      │         async
+   │
+   └──type=ERROR ──► onException
+                         │
+                         └──► wireTap(exception) ──► COMMON.EXCEPTION.SERVICE.IN
+                                   async                    │
+                                                            ▼
+                                                   MongoDB "exceptions" { ExceptionCode3 }
 ```
  Flow:
 ```text
@@ -29,17 +40,17 @@ Scenario Source Queue
         ↓
 ScenarioEntryRoute
         ↓
-Audit Event
+  Audit Event
         ↓
 CORE.ENTRY.SERVICE.IN
         ↓
 CoreProcessingRoute
         ↓
-Audit Event
+  Audit Event
         ↓
-Target Queue  If any exceptions Occurs: Exception occurs
+  Target Queue
         ↓
-ExceptionProcessor
+ExceptionProcessor,  If any exceptions Occurs: Exception Audit
         ↓
 COMMON.EXCEPTION.SERVICE.IN
 ```
