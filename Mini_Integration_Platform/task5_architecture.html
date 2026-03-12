@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mini Integration Platform — Architecture Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 30px 20px;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+  }
+
+  .subtitle {
+    text-align: center;
+    font-size: 12px;
+    color: #64748b;
+    margin-bottom: 36px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* ── PHASE SECTIONS ─────────────────────────────── */
+  .phase {
+    margin-bottom: 32px;
+  }
+
+  .phase-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 12px;
+    padding-left: 4px;
+    border-left: 3px solid #334155;
+    padding-left: 10px;
+  }
+
+  /* ── ROW LAYOUTS ────────────────────────────────── */
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: nowrap;
+    margin-bottom: 10px;
+  }
+
+  /* ── BOXES ──────────────────────────────────────── */
+  .box {
+    border-radius: 10px;
+    padding: 12px 16px;
+    text-align: center;
+    min-width: 150px;
+    max-width: 190px;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .box .title {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 3px;
+  }
+
+  .box .sub {
+    font-size: 10px;
+    opacity: 0.7;
+    line-height: 1.4;
+  }
+
+  /* colours */
+  .box.json     { background: #1e3a5f; border: 1.5px solid #3b82f6; }
+  .box.json .title { color: #93c5fd; }
+
+  .box.cache    { background: #1a3a2a; border: 1.5px solid #22c55e; }
+  .box.cache .title { color: #86efac; }
+
+  .box.queue    { background: #2d1f4a; border: 1.5px solid #a855f7; }
+  .box.queue .title { color: #d8b4fe; }
+  .box.queue .sub { color: #c4b5fd; }
+
+  .box.processor { background: #1e2d3a; border: 1.5px solid #38bdf8; }
+  .box.processor .title { color: #7dd3fc; }
+
+  .box.route    { background: #2a1f1f; border: 1.5px solid #f97316; }
+  .box.route .title { color: #fdba74; }
+
+  .box.audit-q  { background: #1f2d1f; border: 1.5px solid #4ade80; }
+  .box.audit-q .title { color: #86efac; }
+
+  .box.exc-q    { background: #2d1f1f; border: 1.5px solid #f87171; }
+  .box.exc-q .title { color: #fca5a5; }
+
+  .box.exit-q   { background: #1f2a3a; border: 1.5px solid #60a5fa; }
+  .box.exit-q .title { color: #93c5fd; }
+
+  .box.service  { background: #2a2a1a; border: 1.5px solid #facc15; }
+  .box.service .title { color: #fde68a; }
+
+  .box.publisher { background: #2a1a2a; border: 1.5px solid #e879f9; }
+  .box.publisher .title { color: #f0abfc; }
+
+  /* ── ARROWS ─────────────────────────────────────── */
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
+
+  .arrow .line {
+    width: 36px;
+    height: 2px;
+    background: #475569;
+    position: relative;
+  }
+
+  .arrow .line::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -4px;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid #475569;
+  }
+
+  .arrow .label {
+    font-size: 9px;
+    color: #64748b;
+    margin-top: 3px;
+    white-space: nowrap;
+  }
+
+  .arrow.green .line  { background: #22c55e; }
+  .arrow.green .line::after { border-left-color: #22c55e; }
+  .arrow.red .line    { background: #f87171; }
+  .arrow.red .line::after { border-left-color: #f87171; }
+  .arrow.orange .line { background: #f97316; }
+  .arrow.orange .line::after { border-left-color: #f97316; }
+  .arrow.purple .line { background: #a855f7; }
+  .arrow.purple .line::after { border-left-color: #a855f7; }
+  .arrow.blue .line   { background: #60a5fa; }
+  .arrow.blue .line::after { border-left-color: #60a5fa; }
+
+  /* ── DOWN ARROWS ────────────────────────────────── */
+  .down-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 2px auto;
+    gap: 0;
+  }
+
+  .down-arrow .vline {
+    width: 2px;
+    height: 22px;
+    background: #475569;
+  }
+
+  .down-arrow .vhead {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 8px solid #475569;
+  }
+
+  .down-arrow .vlabel {
+    font-size: 9px;
+    color: #64748b;
+    margin-top: 3px;
+  }
+
+  .down-arrow.green .vline  { background: #22c55e; }
+  .down-arrow.green .vhead  { border-top-color: #22c55e; }
+  .down-arrow.red .vline    { background: #f87171; }
+  .down-arrow.red .vhead    { border-top-color: #f87171; }
+  .down-arrow.orange .vline { background: #f97316; }
+  .down-arrow.orange .vhead { border-top-color: #f97316; }
+  .down-arrow.purple .vline { background: #a855f7; }
+  .down-arrow.purple .vhead { border-top-color: #a855f7; }
+
+  /* ── BRANCH BLOCK ───────────────────────────────── */
+  .branch-container {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 4px;
+  }
+
+  .branch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  .branch-label {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+  }
+
+  .branch-label.happy  { background: #14532d; color: #86efac; }
+  .branch-label.error  { background: #7f1d1d; color: #fca5a5; }
+
+  /* ── SEPARATOR ──────────────────────────────────── */
+  .separator {
+    border: none;
+    border-top: 1px dashed #1e293b;
+    margin: 24px 0;
+  }
+
+  /* ── LEGEND ─────────────────────────────────────── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    justify-content: center;
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid #1e293b;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: #94a3b8;
+  }
+
+  .legend-dot {
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* ── BADGE ──────────────────────────────────────── */
+  .badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-top: 4px;
+    letter-spacing: 1px;
+  }
+  .badge.startup { background: #1e3a5f; color: #93c5fd; }
+  .badge.r1      { background: #2a1f1f; color: #fdba74; }
+  .badge.r2      { background: #2a1f1f; color: #fb923c; }
+  .badge.exc     { background: #7f1d1d; color: #fca5a5; }
+
+  /* ── NOTE BOX ───────────────────────────────────── */
+  .note {
+    background: #161d27;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 11px;
+    color: #64748b;
+    text-align: center;
+    margin: 0 auto;
+    max-width: 700px;
+    line-height: 1.8;
+  }
+
+  .note span { color: #94a3b8; font-weight: 600; }
+
+  /* wide arrow for long labels */
+  .arrow .line.wide { width: 52px; }
+</style>
+</head>
+<body>
+
+<h1>Mini Integration Platform</h1>
+<div class="subtitle">Apache Camel · ActiveMQ · EhCache · Spring Boot 4</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PHASE 1 — STARTUP                                          -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="phase">
+  <div class="phase-label">Phase 1 — Startup &amp; Cache Loading</div>
+
+  <div class="row">
+    <!-- JSON Files -->
+    <div class="box json">
+      <div class="title">Scenarios.json</div>
+      <div class="sub">2 scenarios<br/>4 route defs</div>
+      <span class="badge startup">CLASSPATH</span>
+    </div>
+    <div class="arrow green">
+      <div class="line"></div>
+      <div class="label">CacheLoader</div>
+    </div>
+    <div class="box cache">
+      <div class="title">scenarioCache</div>
+      <div class="sub">WW_Scenario1_1<br/>WW_Scenario2_1</div>
+      <span class="badge startup">EHCACHE</span>
+    </div>
+    <div class="arrow" style="width:40px"></div>
+    <div class="box json">
+      <div class="title">ExceptionCodeList.json</div>
+      <div class="sub">3 error codes</div>
+      <span class="badge startup">CLASSPATH</span>
+    </div>
+    <div class="arrow green">
+      <div class="line"></div>
+      <div class="label">CacheLoader</div>
+    </div>
+    <div class="box cache">
+      <div class="title">exceptionCodeCache</div>
+      <div class="sub">JsonParsing → Code1<br/>NumberFormat → Code2<br/>Exception → Code3</div>
+      <span class="badge startup">EHCACHE</span>
+    </div>
+  </div>
+
+  <div class="down-arrow green" style="margin-top:8px">
+    <div class="vline"></div>
+    <div class="vhead"></div>
+    <div class="vlabel">routes registered</div>
+  </div>
+
+  <div class="row" style="margin-top:6px; gap:10px;">
+    <div class="box route" style="min-width:175px">
+      <div class="title">ScenarioEntryRoute</div>
+      <div class="sub">route1-WW_Scenario1_1<br/>route1-WW_Scenario2_1</div>
+      <span class="badge r1">ROUTE-1 × 2</span>
+    </div>
+    <div class="box route" style="min-width:175px">
+      <div class="title">CoreProcessingRoute</div>
+      <div class="sub">route2-core-processing</div>
+      <span class="badge r2">ROUTE-2 × 1</span>
+    </div>
+    <div class="box audit-q" style="min-width:155px">
+      <div class="title">AuditRoute</div>
+      <div class="sub">audit-consumer-route</div>
+      <span class="badge startup">CONSUMER</span>
+    </div>
+    <div class="box exc-q" style="min-width:155px">
+      <div class="title">ExceptionRoute</div>
+      <div class="sub">exception-consumer-route</div>
+      <span class="badge exc">CONSUMER</span>
+    </div>
+  </div>
+</div>
+
+<hr class="separator"/>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PHASE 2 — MESSAGE ENTRY                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="phase">
+  <div class="phase-label">Phase 2 — Message Entry (Route-1)</div>
+
+  <div class="row">
+    <div class="box publisher">
+      <div class="title">Producer / TestPublisher</div>
+      <div class="sub">posts JSON message</div>
+    </div>
+    <div class="arrow purple">
+      <div class="line"></div>
+      <div class="label">sendBody()</div>
+    </div>
+    <div class="box queue">
+      <div class="title">GATEWAY.ENTRY</div>
+      <div class="sub">.WW.SCENARIO1.1.IN</div>
+      <span class="badge r1">SOURCE QUEUE</span>
+    </div>
+    <div class="arrow orange">
+      <div class="line"></div>
+      <div class="label">consumed by</div>
+    </div>
+    <div class="box route">
+      <div class="title">ScenarioEntryRoute</div>
+      <div class="sub">route1-WW_Scenario1_1</div>
+      <span class="badge r1">ROUTE-1</span>
+    </div>
+    <div class="arrow orange">
+      <div class="line"></div>
+      <div class="label">calls</div>
+    </div>
+    <div class="box processor">
+      <div class="title">ScenarioProcessor</div>
+      <div class="sub">stamps headers:<br/>OriginalMessageId<br/>SourcePutTimestamp<br/>RoutingSlip_*<br/>RouteInfo_*</div>
+    </div>
+  </div>
+
+  <div class="down-arrow orange" style="margin-top:8px">
+    <div class="vline"></div>
+    <div class="vhead"></div>
+    <div class="vlabel">after processing</div>
+  </div>
+
+  <div class="row" style="margin-top:6px;">
+    <div class="box queue">
+      <div class="title">CORE.ENTRY</div>
+      <div class="sub">.SERVICE.IN</div>
+      <span class="badge r1">FORWARD</span>
+    </div>
+    <div class="arrow" style="width:16px"></div>
+    <div class="box audit-q">
+      <div class="title">AuditProcessor</div>
+      <div class="sub">builds Audit.json<br/>Route1 leg</div>
+    </div>
+    <div class="arrow green">
+      <div class="line"></div>
+      <div class="label">sends to</div>
+    </div>
+    <div class="box audit-q">
+      <div class="title">COMMON.AUDIT</div>
+      <div class="sub">.SERVICE.IN</div>
+      <span class="badge startup">AUDIT ✓</span>
+    </div>
+  </div>
+</div>
+
+<hr class="separator"/>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PHASE 3 — CORE PROCESSING                                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="phase">
+  <div class="phase-label">Phase 3 — Core Processing (Route-2)</div>
+
+  <div class="row">
+    <div class="box queue">
+      <div class="title">CORE.ENTRY</div>
+      <div class="sub">.SERVICE.IN</div>
+    </div>
+    <div class="arrow orange">
+      <div class="line"></div>
+      <div class="label">consumed by</div>
+    </div>
+    <div class="box route">
+      <div class="title">CoreProcessingRoute</div>
+      <div class="sub">route2-core-processing</div>
+      <span class="badge r2">ROUTE-2</span>
+    </div>
+    <div class="arrow orange">
+      <div class="line"></div>
+      <div class="label">reads headers</div>
+    </div>
+    <div class="box cache">
+      <div class="title">ScenarioCacheService</div>
+      <div class="sub">getScenario()<br/>finds Route2 def</div>
+      <span class="badge startup">EHCACHE</span>
+    </div>
+    <div class="arrow orange">
+      <div class="line"></div>
+      <div class="label">then calls</div>
+    </div>
+    <div class="box processor">
+      <div class="title">MessageValidator<br/>Processor</div>
+      <div class="sub">validates body<br/>type field check</div>
+    </div>
+  </div>
+
+  <div class="down-arrow" style="margin-top:8px">
+    <div class="vline" style="height:18px"></div>
+    <div class="vhead"></div>
+    <div class="vlabel">two possible outcomes</div>
+  </div>
+
+  <!-- BRANCH -->
+  <div class="branch-container" style="margin-top:10px">
+
+    <!-- HAPPY BRANCH -->
+    <div class="branch">
+      <div class="branch-label happy">✅ HAPPY PATH — type: ORDER</div>
+      <div class="down-arrow green" style="margin:0 auto 6px">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box exit-q" style="min-width:170px">
+        <div class="title">GATEWAY.EXIT</div>
+        <div class="sub">.WW.SCENARIO1.1.OUT<br/>(dynamic via .toD)</div>
+        <span class="badge startup">EXIT QUEUE</span>
+      </div>
+      <div class="down-arrow green" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box audit-q" style="min-width:170px">
+        <div class="title">AuditProcessor</div>
+        <div class="sub">builds Audit.json<br/>Route2 leg</div>
+      </div>
+      <div class="down-arrow green" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box audit-q" style="min-width:170px">
+        <div class="title">COMMON.AUDIT</div>
+        <div class="sub">.SERVICE.IN</div>
+        <span class="badge startup">AUDIT ✓</span>
+      </div>
+      <div class="down-arrow green" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box audit-q" style="min-width:170px">
+        <div class="title">AuditRoute</div>
+        <div class="sub">audit-consumer-route<br/>logs / Task6: persist</div>
+      </div>
+    </div>
+
+    <!-- EXCEPTION BRANCH -->
+    <div class="branch">
+      <div class="branch-label error">❌ EXCEPTION PATH — type: ERROR</div>
+      <div class="down-arrow red" style="margin:0 auto 6px">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box exc-q" style="min-width:170px">
+        <div class="title">onException handler</div>
+        <div class="sub">handled(true)<br/>RuntimeException caught</div>
+        <span class="badge exc">CAMEL EIP</span>
+      </div>
+      <div class="down-arrow red" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box exc-q" style="min-width:170px">
+        <div class="title">ExceptionProcessor</div>
+        <div class="sub">resolveCode()<br/>→ ExceptionCodeService<br/>→ exceptionCodeCache</div>
+      </div>
+      <div class="down-arrow red" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box exc-q" style="min-width:170px">
+        <div class="title">COMMON.EXCEPTION</div>
+        <div class="sub">.SERVICE.IN<br/>endTimestamp: ""</div>
+        <span class="badge exc">EXCEPTION ✗</span>
+      </div>
+      <div class="down-arrow red" style="margin:6px auto">
+        <div class="vline"></div><div class="vhead"></div>
+      </div>
+      <div class="box exc-q" style="min-width:170px">
+        <div class="title">ExceptionRoute</div>
+        <div class="sub">exception-consumer-route<br/>logs / Task6: persist</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="separator"/>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- FULL QUEUE MAP                                             -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="phase">
+  <div class="phase-label">All Queues — Full Map</div>
+
+  <div class="row" style="flex-wrap:wrap; gap:12px; justify-content:center;">
+    <div class="box queue" style="min-width:200px">
+      <div class="title">GATEWAY.ENTRY.WW.SCENARIO1.1.IN</div>
+      <div class="sub">Route1 source — Scenario1</div>
+    </div>
+    <div class="box queue" style="min-width:200px">
+      <div class="title">GATEWAY.ENTRY.WW.SCENARIO2.1.IN</div>
+      <div class="sub">Route1 source — Scenario2</div>
+    </div>
+    <div class="box queue" style="min-width:200px">
+      <div class="title">CORE.ENTRY.SERVICE.IN</div>
+      <div class="sub">Route2 input — shared</div>
+    </div>
+    <div class="box exit-q" style="min-width:200px">
+      <div class="title">GATEWAY.EXIT.WW.SCENARIO1.1.OUT</div>
+      <div class="sub">Route2 exit — Scenario1</div>
+    </div>
+    <div class="box exit-q" style="min-width:200px">
+      <div class="title">GATEWAY.EXIT.WW.SCENARIO2.1.OUT</div>
+      <div class="sub">Route2 exit — Scenario2</div>
+    </div>
+    <div class="box audit-q" style="min-width:200px">
+      <div class="title">COMMON.AUDIT.SERVICE.IN</div>
+      <div class="sub">All audit messages</div>
+    </div>
+    <div class="box exc-q" style="min-width:200px">
+      <div class="title">COMMON.EXCEPTION.SERVICE.IN</div>
+      <div class="sub">All exception messages</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- LEGEND                                                     -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>JSON Config File</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>EhCache</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#a855f7"></div>AMQ Queue</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#38bdf8"></div>Processor</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f97316"></div>Camel Route</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#4ade80"></div>Audit Flow</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f87171"></div>Exception Flow</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div>Exit Queue</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#e879f9"></div>Test Publisher</div>
+</div>
+
+</body>
+</html>

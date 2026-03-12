@@ -7,7 +7,6 @@ import com.apachecamel.mini_integration_platform.processor.ScenarioProcessor;
 import com.apachecamel.mini_integration_platform.service.AuditJsonBuilder;
 import com.apachecamel.mini_integration_platform.service.ExceptionJsonBuilder;
 import com.apachecamel.mini_integration_platform.service.ScenarioCacheService;
-import com.apachecamel.mini_integration_platform.service.persistence.WireTapPersistenceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.builder.RouteBuilder;
@@ -20,23 +19,18 @@ import java.util.List;
 /**
  * CoreProcessingRoute — handles ALL route legs after Route-1 for every scenario.
  *
- * Both audit AND exception are sent via wireTap — fully async, non-blocking.
- *
  * Flow (happy path — per leg):
  * ┌──────────────────────────────────────────────────────────────────────┐
  * │  CORE.ENTRY.SERVICE.IN                                               │
  * │       ↓                                                              │
- * │  Step 1: EhCache lookup → update RouteInfo headers for this leg     │
+ * │  Step 1: EhCache lookup → increment LegIndex → update RouteInfo     │
  * │       ↓                                                              │
  * │  Step 2: MessageValidatorProcessor                                   │
  * │       ↓                                                              │
- * │  Step 3: wireTap("log:wiretap") → MongoDB POST_VALIDATION (async)   │
+ * │  Step 3: .toD(exit queue)   ✅ MAIN JOB DONE                        │
  * │       ↓                                                              │
- * │  Step 4: .toD(exit queue)  ✅ MAIN JOB DONE                         │
- * │       ↓                                                              │
- * │  Step 5: wireTap("log:wiretap") → MongoDB EXIT (async)              │
- * │       ↓                                                              │
- * │  Step 6: wireTap(auditQueue) → COMMON.AUDIT.SERVICE.IN (async)     │
+ * │  Step 4: wireTap(COMMON.AUDIT.SERVICE.IN)  ── async thread ──────►  │
+ * │       onPrepare: AuditJsonBuilder.build() → setBody(auditJson)      │
  * │  THREAD RELEASED                                                     │
  * └──────────────────────────────────────────────────────────────────────┘
  *
@@ -46,9 +40,10 @@ import java.util.List;
  * │       ↓                                                              │
  * │  onException handler                                                 │
  * │       ↓                                                              │
- * │  wireTap(exceptionQueue) → COMMON.EXCEPTION.SERVICE.IN (async)       │
- * │       onPrepare: ExceptionJsonBuilder.build()                        │
- * │  THREAD RELEASED — exception does NOT block the route thread         │
+ * │  wireTap(COMMON.EXCEPTION.SERVICE.IN)  ── async thread ──────────►  │
+ * │       onPrepare: ExceptionJsonBuilder.build() → setBody(json)       │
+ * │       reads EXCEPTION_CAUGHT + current leg headers                  │
+ * │  THREAD RELEASED                                                     │
  * └──────────────────────────────────────────────────────────────────────┘
  */
 @Slf4j
@@ -60,7 +55,6 @@ public class CoreProcessingRoute extends RouteBuilder {
     private final MessageValidatorProcessor messageValidatorProcessor;
     private final AuditJsonBuilder          auditJsonBuilder;
     private final ExceptionJsonBuilder      exceptionJsonBuilder;
-    private final WireTapPersistenceService wireTapPersistenceService;
 
     @Value("${app.queue.core-entry:CORE.ENTRY.SERVICE.IN}")
     private String coreEntryQueue;
@@ -83,10 +77,9 @@ public class CoreProcessingRoute extends RouteBuilder {
                 .routeId("route-core-processing")
 
                 // ── Exception handler — async, non-blocking ───────────────────────
-                // ExceptionJsonBuilder reads the EXCEPTION_CAUGHT property from the
-                // exchange automatically — it knows exactly which leg failed and
-                // which route headers (RouteName, source, target) were active.
-                // wireTap fires on a separate thread — route thread released immediately.
+                // ExceptionJsonBuilder reads EXCEPTION_CAUGHT from the exchange and
+                // the current leg's RouteInfo headers — so it always knows exactly
+                // which leg failed (Route2, Route3, etc.) and builds the correct JSON.
                 .onException(Exception.class)
                 .handled(true)
                 .wireTap("activemq:" + exceptionQueue)
@@ -98,7 +91,7 @@ public class CoreProcessingRoute extends RouteBuilder {
                 .log("Exception dispatched for leg=${header.CurrentRouteName} (async)")
                 .end()
 
-                // ── Step 1: EhCache lookup → determine next route leg ─────────────
+                // ── Step 1: EhCache lookup → determine and update next route leg ──
                 .process(exchange -> {
                     String countryCode  = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_COUNTRY,  String.class);
                     String scenarioName = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_SCENARIO, String.class);
@@ -119,59 +112,48 @@ public class CoreProcessingRoute extends RouteBuilder {
 
                     List<RouteConfig> allRoutes = scenario.getRoutes();
 
-                    // Increment leg index — Route1 set it to 0, so first arrival = index 1 (Route2)
+                    // Route-1 stamped LegIndex=0. Increment to get next leg.
                     int lastLegIndex = exchange.getProperty(PROP_CURRENT_LEG_INDEX, 0, Integer.class);
                     int nextLegIndex = lastLegIndex + 1;
 
                     if (nextLegIndex >= allRoutes.size()) {
                         throw new IllegalStateException(
                                 "No more route legs for scenario '" + scenario.getCacheKey() +
-                                        "' — lastLegIndex=" + lastLegIndex + ", totalRoutes=" + allRoutes.size());
+                                        "' — lastLegIndex=" + lastLegIndex +
+                                        ", totalRoutes=" + allRoutes.size());
                     }
 
                     RouteConfig nextLeg = allRoutes.get(nextLegIndex);
 
-                    log.info("[CoreProcessingRoute] Executing leg '{}' ({}/{}) for scenario '{}' → '{}'",
+                    log.info("[CoreProcessingRoute] Executing leg '{}' ({}/{}) for '{}' → '{}'",
                             nextLeg.getRouteName(), nextLegIndex + 1, allRoutes.size(),
                             scenario.getCacheKey(), nextLeg.getTarget());
 
-                    // Update RouteInfo headers for this leg
-                    // These are what ExceptionJsonBuilder, AuditJsonBuilder, and
-                    // WireTapPersistenceService all read to identify the current leg
+                    // Update RouteInfo headers for this leg — AuditJsonBuilder and
+                    // ExceptionJsonBuilder both read these to build their JSON
                     exchange.getIn().setHeader(ScenarioProcessor.CURRENT_ROUTE_NAME,    nextLeg.getRouteName());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_SOURCE,          nextLeg.getSource());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET,          nextLeg.getTarget());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_START_TIMESTAMP, Instant.now().toString());
                     exchange.setProperty(PROP_CURRENT_LEG_INDEX, nextLegIndex);
-                    exchange.setProperty("routeTarget", nextLeg.getTarget());
+                    exchange.setProperty("routeTarget",           nextLeg.getTarget());
                 })
 
-                .log("Processing leg=${header.CurrentRouteName} for scenario=${header.RoutingSlip_ScenarioName}")
+                .log("Processing leg=${header.CurrentRouteName} scenario=${header.RoutingSlip_ScenarioName}")
 
                 // ── Step 2: Validate message ──────────────────────────────────────
-                // If this throws, onException fires → ExceptionJsonBuilder builds
-                // JSON with the current leg's headers → wireTap sends to exception queue
+                // If this throws → onException fires → ExceptionJsonBuilder builds
+                // JSON with the current leg's headers → sent async to exception queue
                 .process(messageValidatorProcessor)
 
-                // ── Step 3: Wire Tap — post-validation snapshot (async) ───────────
-                .wireTap("log:wiretap")
-                .onPrepare(ex -> wireTapPersistenceService.save(ex,
-                        ex.getIn().getHeader(ScenarioProcessor.CURRENT_ROUTE_NAME, String.class)
-                                + "_POST_VALIDATION"))
-                .end()
-
-                // ── Step 4: Forward to this leg's target queue  ✅ ─────────────────
+                // ── Step 3: Forward to this leg's target queue  ✅ ─────────────────
                 .toD("activemq:${exchangeProperty.routeTarget}")
                 .log("Delivered to ${exchangeProperty.routeTarget} — leg=${header.CurrentRouteName}")
 
-                // ── Step 5: Wire Tap — exit snapshot (async) ──────────────────────
-                .wireTap("log:wiretap")
-                .onPrepare(ex -> wireTapPersistenceService.save(ex,
-                        ex.getIn().getHeader(ScenarioProcessor.CURRENT_ROUTE_NAME, String.class)
-                                + "_EXIT"))
-                .end()
-
-                // ── Step 6: Audit this leg — async, non-blocking ──────────────────
+                // ── Step 4: Audit this leg — async, non-blocking ──────────────────
+                // AuditJsonBuilder reads the current leg's RouteInfo headers — so
+                // each leg gets its own Audit record with the correct RouteName,
+                // RouteSource, RouteTarget and timestamps.
                 .wireTap("activemq:" + auditQueue)
                 .onPrepare(ex -> {
                     String json = auditJsonBuilder.build(ex);
