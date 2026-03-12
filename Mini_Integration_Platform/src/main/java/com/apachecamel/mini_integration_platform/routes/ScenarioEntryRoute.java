@@ -2,50 +2,65 @@ package com.apachecamel.mini_integration_platform.routes;
 
 import com.apachecamel.mini_integration_platform.model.RouteConfig;
 import com.apachecamel.mini_integration_platform.model.Scenario;
-import com.apachecamel.mini_integration_platform.processor.AuditProcessor;
-import com.apachecamel.mini_integration_platform.processor.ExceptionProcessor;
 import com.apachecamel.mini_integration_platform.processor.ScenarioProcessor;
+import com.apachecamel.mini_integration_platform.service.AuditJsonBuilder;
+import com.apachecamel.mini_integration_platform.service.ExceptionJsonBuilder;
 import com.apachecamel.mini_integration_platform.service.ScenarioCacheService;
+import com.apachecamel.mini_integration_platform.service.persistence.WireTapPersistenceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.builder.RouteBuilder;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 /**
- * ScenarioEntryRoute  (Route-1)
+ * ScenarioEntryRoute — Route-1 for every scenario in EhCache.
  *
- * Dynamically creates ONE Camel route for EVERY scenario loaded from EhCache.
- * So if Scenarios.json has 2 scenarios, 2 independent Route-1 routes are created:
+ * Both audit AND exception are sent via wireTap — fully async, non-blocking.
  *
- *   route1-WW_Scenario1_1   listens on  GATEWAY.ENTRY.WW.SCENARIO1.1.IN
- *   route1-WW_Scenario2_1   listens on  GATEWAY.ENTRY.WW.SCENARIO2.1.IN
+ * Flow (happy path):
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  Source Queue                                                        │
+ * │       ↓                                                              │
+ * │  ScenarioProcessor  → stamps all headers                            │
+ * │       ↓                                                              │
+ * │  wireTap("log:wiretap")  → MongoDB ROUTE1_ENTRY (async)             │
+ * │       ↓                                                              │
+ * │  .to(CORE.ENTRY.SERVICE.IN)  ✅ MAIN JOB DONE                       │
+ * │       ↓                                                              │
+ * │  wireTap(auditQueue)  → COMMON.AUDIT.SERVICE.IN (async)             │
+ * │       onPrepare: AuditJsonBuilder.build()                           │
+ * │  THREAD RELEASED                                                     │
+ * └──────────────────────────────────────────────────────────────────────┘
  *
- * Per-route flow:
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │  Source Queue (per scenario)                                             │
- * │       ↓                                                                  │
- * │  ScenarioProcessor  → stamps OriginalMessageId, SourcePutTimestamp,      │
- * │                        RoutingSlip headers, RouteInfo headers            │
- * │       ↓                                                                  │
- * │  .to(CORE.ENTRY.SERVICE.IN)   → hands off to Route-2                    │
- * │       ↓                                                                  │
- * │  AuditProcessor     → builds Audit.json, sends to COMMON.AUDIT.SERVICE.IN│
- * │                                                                          │
- * │  On ANY Exception:                                                       │
- * │  ExceptionProcessor → builds Exception.json, sends to                   │
- * │                        COMMON.EXCEPTION.SERVICE.IN                      │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * Flow (exception path):
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  Any step throws                                                     │
+ * │       ↓                                                              │
+ * │  onException handler                                                 │
+ * │       ↓                                                              │
+ * │  wireTap(exceptionQueue) → COMMON.EXCEPTION.SERVICE.IN (async)      │
+ * │       onPrepare: ExceptionJsonBuilder.build()                       │
+ * │  THREAD RELEASED — exception does NOT block the route thread        │
+ * └──────────────────────────────────────────────────────────────────────┘
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ScenarioEntryRoute extends RouteBuilder {
 
-    private final ScenarioCacheService scenarioCacheService;
-    private final AuditProcessor       auditProcessor;
-    private final ExceptionProcessor   exceptionProcessor;
+    private final ScenarioCacheService      scenarioCacheService;
+    private final AuditJsonBuilder          auditJsonBuilder;
+    private final ExceptionJsonBuilder      exceptionJsonBuilder;
+    private final WireTapPersistenceService wireTapPersistenceService;
+
+    @Value("${app.queue.audit:COMMON.AUDIT.SERVICE.IN}")
+    private String auditQueue;
+
+    @Value("${app.queue.exception:COMMON.EXCEPTION.SERVICE.IN}")
+    private String exceptionQueue;
 
     // ──────────────────────────────────────────────────────────────────────────
 
@@ -54,7 +69,7 @@ public class ScenarioEntryRoute extends RouteBuilder {
         List<Scenario> scenarios = scenarioCacheService.getAllScenarios();
 
         if (scenarios.isEmpty()) {
-            log.warn("[ScenarioEntryRoute] No scenarios found in cache — no Route-1 routes created.");
+            log.warn("[ScenarioEntryRoute] No scenarios found in cache — no routes created.");
             return;
         }
 
@@ -69,48 +84,61 @@ public class ScenarioEntryRoute extends RouteBuilder {
         RouteConfig route1Config = scenario.findRoute("Route1");
 
         if (route1Config == null) {
-            log.warn("[ScenarioEntryRoute] Scenario '{}' has no Route1 definition — skipping.",
+            log.warn("[ScenarioEntryRoute] No Route1 for scenario '{}' — skipping.",
                     scenario.getCacheKey());
             return;
         }
 
         String sourceQueue = scenario.getEffectiveSourceQueue();
-        String targetQueue = route1Config.getTarget();              // CORE.ENTRY.SERVICE.IN
-        String routeId     = "route1-" + scenario.getCacheKey();   // e.g. "route1-WW_Scenario1_1"
+        String targetQueue = route1Config.getTarget();
+        String routeId     = "route1-" + scenario.getCacheKey();
 
-        // Create one ScenarioProcessor instance per scenario (holds scenario + route1Config)
         ScenarioProcessor scenarioProcessor = new ScenarioProcessor(scenario, route1Config);
 
-        log.info("[ScenarioEntryRoute] Creating Route1: id='{}' from='{}' to='{}'",
+        log.info("[ScenarioEntryRoute] Registering Route1 '{}': {} → {}",
                 routeId, sourceQueue, targetQueue);
 
         from("activemq:" + sourceQueue)
                 .routeId(routeId)
 
-                // ── Exception handler — catches any error in this route ────────────
+                // ── Exception handler — async, non-blocking ───────────────────────
+                // When any step in Route-1 throws, the onException block fires.
+                // ExceptionJsonBuilder builds the JSON from the exchange (including
+                // the caught exception via EXCEPTION_CAUGHT property).
+                // wireTap sends it to COMMON.EXCEPTION.SERVICE.IN on a separate thread
+                // — the route thread is released immediately without waiting.
                 .onException(Exception.class)
                 .handled(true)
-                .process(exceptionProcessor)
+                .wireTap("activemq:" + exceptionQueue)
+                .onPrepare(ex -> {
+                    String json = exceptionJsonBuilder.build(ex);
+                    ex.getIn().setBody(json);
+                })
+                .end()
+                .log("Route1 [" + routeId + "] exception dispatched (async)")
                 .end()
 
-                // ── Step 1: Stamp all headers via ScenarioProcessor ───────────────
+                // ── Step 1: Stamp all routing headers ─────────────────────────────
                 .process(scenarioProcessor)
-                .log("Route1 [" + routeId + "] received message — messageId=${header.OriginalMessageId}")
+                .log("Route1 [" + routeId + "] received — msgId=${header.OriginalMessageId}")
 
-                // ── Step 2: Forward message to CORE.ENTRY.SERVICE.IN ──────────────
+                // ── Step 2: Wire Tap snapshot — direct MongoDB, no queue ──────────
+                .wireTap("log:wiretap")
+                .onPrepare(ex -> wireTapPersistenceService.save(ex, "ROUTE1_ENTRY"))
+                .end()
+
+                // ── Step 3: Forward to CORE.ENTRY.SERVICE.IN  ✅ ─────────────────
                 .to("activemq:" + targetQueue)
                 .log("Route1 [" + routeId + "] forwarded to " + targetQueue)
 
-                // ── Step 3: Send Audit to COMMON.AUDIT.SERVICE.IN ─────────────────
-                .process(auditProcessor)
-                .log("Route1 [" + routeId + "] audit sent");
+                // ── Step 4: Audit Route-1 leg — async, non-blocking ───────────────
+                .wireTap("activemq:" + auditQueue)
+                .onPrepare(ex -> {
+                    String json = auditJsonBuilder.build(ex);
+                    ex.getIn().setBody(json);
+                })
+                .end()
+
+                .log("Route1 [" + routeId + "] audit dispatched (async)");
     }
 }
-
-
-
-
-
-
-
-

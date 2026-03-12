@@ -24,6 +24,7 @@ import org.springframework.stereotype.Component;
  * Uses ApplicationRunner so messages are published AFTER all routes are live.
  * Remove or comment out this class in production.
  */
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
