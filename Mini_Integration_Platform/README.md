@@ -4,37 +4,112 @@ Integration platforms exist because modern enterprises have dozens of systems bu
 
 Architecture Flow: 
 ```text
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  STARTUP                                                                                    │
+│                                                                                             │
+│  Scenarios.json ──► scenarioCache (EhCache)       ExceptionCodeList.json ──► exceptionCodeCache   │
+│                           │                                                                 │
+│                           ▼                                                                 │
+│            Camel registers routes at startup                                                │
+│            ScenarioEntryRoute (Route-1 × 2)  +  CoreProcessingRoute (shared)              │
+│            AuditRoute (consumer)            +  ExceptionRoute (consumer)               │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
 Producer
    │
    ▼
 GATEWAY.ENTRY.WW.SCENARIO1.1.IN
    │
    ▼
-Route-1 (ScenarioEntryRoute)
-   │  ScenarioProcessor → stamp headers
-   │  .to(CORE.ENTRY.SERVICE.IN) ✅
-   │
-   ├──► wireTap(audit) ──► COMMON.AUDIT.SERVICE.IN ──► MongoDB "audits" { Route1 }
-   │         async
-   ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Route-1  (ScenarioEntryRoute)                                                            │
+│                                                                                             │
+│  ScenarioProcessor                                                                        │
+│     stamp OriginalMessageId, SourcePutTimestamp                                             │
+│     stamp RoutingSlip_Country, RoutingSlip_Scenario, RoutingSlip_InstanceId                │
+│     stamp RouteInfo_RouteName=Route1, RouteSource, RouteTarget                              │
+│     stamp LegIndex = 0                                                                      │
+│                                                                                             │
+│  .to(CORE.ENTRY.SERVICE.IN)  ✅  main job done                                              │
+│                                                                                             │
+│  wireTap fires ──────────────────────────────────────────────────────────────────────────► │
+│  (async — separate thread — main thread released immediately)                               │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+   │                                              │
+   │ main thread continues                        │ wireTap thread
+   ▼                                             ▼
+CORE.ENTRY.SERVICE.IN                           AuditJsonBuilder.build()
+                                                   reads RouteInfo headers
+                                                   builds Route-1 Audit JSON
+                                                        │
+                                                        ▼
+                                                 COMMON.AUDIT.SERVICE.IN
+                                                        │
+                                                        ▼
+                                                 AuditRoute → AuditPersistenceService
+                                                        │
+                                                        ▼
+                                                 MongoDB "audits" { Route1 leg }
+
+
 CORE.ENTRY.SERVICE.IN
    │
    ▼
-CoreProcessingRoute
-   │  EhCache lookup → LegIndex++ → update RouteInfo
-   │  MessageValidatorProcessor
-   │       │
-   │  type=ORDER ──► .toD(GATEWAY.EXIT) ✅
-   │                      │
-   │                      ├──► wireTap(audit) ──► MongoDB "audits" { Route2 }
-   │                      │         async
-   │
-   └──type=ERROR ──► onException
-                         │
-                         └──► wireTap(exception) ──► COMMON.EXCEPTION.SERVICE.IN
-                                   async                    │
-                                                            ▼
-                                                   MongoDB "exceptions" { ExceptionCode3 }
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  CoreProcessingRoute  (shared — all scenarios, all legs Route-2+)                          │
+│                                                                                             │
+│  EhCache lookup                                                                           │
+│     read RoutingSlip headers → getScenario(country, name, instanceId)                       │
+│     LegIndex++ (0→1) → Routes[1] = Route2                                                  │
+│     update RouteInfo_RouteName=Route2, RouteSource, RouteTarget                             │
+│                                                                                             │
+│  MessageValidatorProcessor
+│     validate JSON body                                                                      │
+│          │                                                                                  │
+│          ├── type = ORDER ──────────────────────────────────────────────────────────────►   │
+│          │                                                                                  │
+│          └── type = ERROR ──► throws RuntimeException                                      │
+└──────────────────────────────────────┬──────────────────────────────┬──────────────────────┘
+                                       │                              │
+              HAPPY PATH ─────────────┘                              └───────── EXCEPTION PATH
+                    │                                                              │
+                    ▼                                                              ▼
+     .toD(GATEWAY.EXIT.WW.SCENARIO1.1.OUT)  ✅              onException handler fires
+                    │                                                              │
+     wireTap fires ──┘                                       wireTap fires ──────────┘
+     (async — separate thread)                               (async — separate thread)
+                    │                                                              │
+                    ▼                                                              ▼
+     AuditJsonBuilder.build()                          ExceptionJsonBuilder.build()
+       current leg RouteInfo headers                      reads EXCEPTION_CAUGHT prop
+       builds Route-2 Audit JSON                          reads current leg headers
+                    │                                      resolves code from EhCache
+                    ▼                                                              │
+     COMMON.AUDIT.SERVICE.IN                                                       ▼
+                    │                                          COMMON.EXCEPTION.SERVICE.IN
+                    ▼                                                              │
+     AuditRoute → AuditPersistenceService                                         ▼
+                    │                                      ExceptionRoute → ExceptionPersistenceService
+                    ▼                                                              │
+     MongoDB "audits" { Route2 leg }                                              ▼
+                                                           MongoDB "exceptions" {
+                                                             exceptionCode: ExceptionCode3
+                                                             routeName: Route2
+                                                             endTimestamp: ""
+                                                             stacktrace: ...
+                                                           }
+
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  MONGODB RESULT — linked by OriginalMessageId                                               │
+│                                                                                             │
+│  Happy Path:    audits × 2  (Route1 + Route2)       exceptions × 0                        │
+│  Exception Path:audits × 1  (Route1 only)           exceptions × 1  (Route2, Code3)      │
+│                                                                                             │
+│  Correlate:  db.audits.find({ originalMessageId: "ID:xyz" })                              │
+│              db.exceptions.find({ originalMessageId: "ID:xyz" })                          │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
  
 Collections in Mongodb:
