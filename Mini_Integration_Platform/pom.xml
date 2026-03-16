@@ -61,6 +61,16 @@
             <artifactId>camel-activemq-starter</artifactId>
         </dependency>
 
+        <!-- JMS Connection Pooling — required by camel-activemq at runtime -->
+        <!-- camel-activemq tries to create a PooledConnectionFactory using    -->
+        <!-- this class: org.messaginghub.pooled.jms.JmsPoolConnectionFactory  -->
+        <!-- Without this JAR the application crashes with ClassNotFoundException -->
+        <dependency>
+            <groupId>org.messaginghub</groupId>
+            <artifactId>pooled-jms</artifactId>
+            <version>3.1.7</version>
+        </dependency>
+
         <!-- Camel Jackson (JSON marshalling) -->
         <dependency>
             <groupId>org.apache.camel.springboot</groupId>
@@ -93,6 +103,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Boot Mail — Email Notifications via SMTP -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
         <!-- Spring Boot Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -105,12 +121,6 @@
             <groupId>org.apache.camel</groupId>
             <artifactId>camel-test-spring-junit5</artifactId>
             <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.messaginghub</groupId>
-            <artifactId>pooled-jms</artifactId>
-            <version>3.1.4</version>
         </dependency>
 
     </dependencies>

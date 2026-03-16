@@ -13,39 +13,31 @@ import java.time.Instant;
  * ExceptionDocument
  *
  * MongoDB document stored in the "exceptions" collection.
- * Maps exactly to the Exception.json message structure produced by ExceptionProcessor.
- *
- * MongoDB collection: exceptions
- * Database:           mini_integration_platform
  *
  * Document structure:
  * {
- *   "_id":                  ObjectId (auto-generated),
+ *   "_id":                  ObjectId,
  *   "originalMessageId":    "ID:abc-123",
  *   "sourcePutTimestamp":   "2026-03-10T14:00:00Z",
  *   "eventTimestamp":       "2026-03-10T14:00:00.090Z",
  *   "messageId":            "ID:abc-123",
- *   "routingSlip": {
- *       "countryCode":  "WW",
- *       "scenarioName": "Scenario1",
- *       "instanceId":   1
- *   },
- *   "routeInfo": {
- *       "routeName":      "Route1",
- *       "source":         "GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
- *       "target":         "CORE.ENTRY.SERVICE.IN",
- *       "startTimestamp": "...",
- *       "endTimestamp":   ""        ← always empty for exceptions
- *   },
+ *   "routingSlip": { "countryCode", "scenarioName", "instanceId" },
+ *   "routeInfo":   { "routeName", "source", "target", "startTimestamp", "endTimestamp": "" },
  *   "payload":              "{ original message body }",
  *   "exceptionCode":        "ExceptionCode3",
  *   "exceptionStacktrace":  "java.lang.RuntimeException: ...",
- *   "createdAt":            ISODate
- * }
+ *   "createdAt":            ISODate,
  *
- * Indexes:
- *   - originalMessageId   (correlate with audit records for the same message)
- *   - exceptionCode       (filter by error type)
+ *   // ── AI Analysis (populated async after save) ──────────────────────────
+ *   "aiAnalysis": {
+ *     "summary":            "Plain English explanation of what went wrong",
+ *     "rootCause":          "The specific technical reason",
+ *     "affectedComponent":  "MessageValidatorProcessor",
+ *     "suggestedAction":    "What the developer or ops team should do",
+ *     "severity":           "LOW / MEDIUM / HIGH / CRITICAL",
+ *     "analysedAt":         ISODate
+ *   }
+ * }
  */
 @Data
 @Builder
@@ -85,7 +77,8 @@ public class ExceptionDocument {
     @Field("exceptionStacktrace")
     private String exceptionStacktrace;
 
-    /** Server-side timestamp — when this document was inserted into MongoDB */
     @Field("createdAt")
     private Instant createdAt;
+
+
 }

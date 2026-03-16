@@ -50,10 +50,13 @@ public class ExceptionPersistenceService {
 
     /**
      * Parses the raw exception JSON and persists it to MongoDB.
+     * Returns the saved document (with MongoDB _id populated) so the
+     * caller can pass it to ExceptionAnalysisService for AI analysis.
      *
      * @param exceptionJson  the raw JSON string consumed from COMMON.EXCEPTION.SERVICE.IN
+     * @return               the saved ExceptionDocument with _id populated, or null on failure
      */
-    public void save(String exceptionJson) {
+    public ExceptionDocument save(String exceptionJson) {
         try {
             JsonNode root = objectMapper.readTree(exceptionJson);
 
@@ -95,16 +98,18 @@ public class ExceptionPersistenceService {
             // ── Save to MongoDB "exceptions" collection ───────────────────────
             ExceptionDocument saved = exceptionRepository.save(document);
 
-            log.error("[ExceptionPersistenceService] Saved exception to MongoDB — id='{}' " +
-                            "originalMessageId='{}' code='{}' route='{}'",
+            log.error("[ExceptionPersistenceService] Saved exception — id='{}' msgId='{}' code='{}' route='{}'",
                     saved.getId(),
                     saved.getOriginalMessageId(),
                     saved.getExceptionCode(),
                     saved.getRouteInfo() != null ? saved.getRouteInfo().getRouteName() : "N/A");
 
+            return saved;
+
         } catch (Exception e) {
             log.error("[ExceptionPersistenceService] Failed to parse/save exception JSON — {}",
                     e.getMessage(), e);
+            return null;
         }
     }
 }
