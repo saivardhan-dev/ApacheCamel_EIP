@@ -20,21 +20,26 @@
          ]
       },
       {
-         "CountryCode":"WW",
-         "ScenarioName":"Scenario2",
-         "InstanceId":1,
-         "InboundQueue":"GATEWAY.ENTRY.WW.SCENARIO2.1.IN",
-		 "TargetQueue":"GATEWAY.ENTRY.WW.SCENARIO2.1.OUT",
-         "Routes":[
+         "CountryCode": "WW",
+         "ScenarioName": "Scenario2",
+         "InstanceId": 1,
+         "SourceQueue": "GATEWAY.ENTRY.WW.SCENARIO2.1.IN",
+         "TargetQueue": "GATEWAY.EXIT.WW.SCENARIO2.1.OUT",
+         "Routes": [
             {
-               "RouteName":"Route1",
-               "source":"GATEWAY.ENTRY.WW.SCENARIO2.1.IN",
-               "target":"CORE.ENTRY.SERVICE.IN"
+               "RouteName": "Route1",
+               "source": "GATEWAY.ENTRY.WW.SCENARIO2.1.IN",
+               "target": "CORE.ENTRY.SERVICE.IN"
             },
             {
-               "RouteName":"Route2",
-               "source":"CORE.ENTRY.SERVICE.IN",
-               "target":"GATEWAY.EXIT.WW.SCENARIO2.1.OUT"
+               "RouteName": "Route2",
+               "source": "CORE.ENTRY.SERVICE.IN",
+               "target": null,
+               "routingStrategy": "DYNAMIC_TYPE_AMOUNT",
+               "amountThreshold": 1500,
+               "highValueSuffix": "HIGHVALUE",
+               "lowValueSuffix": "LOWVALUE",
+               "queuePattern": "GATEWAY.EXIT.WW.{SCENARIO}.{TYPE}.{BRACKET}.1.OUT"
             }
          ]
       }

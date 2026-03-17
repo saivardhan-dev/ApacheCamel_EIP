@@ -81,6 +81,11 @@ public class AuditDocument {
     private String payload;
 
     /** Server-side timestamp — when this document was inserted into MongoDB */
+    /** ENTRY — message entering the route, EXIT — message leaving the route */
+    @Indexed
+    @Field("auditType")
+    private String auditType;
+
     @Field("createdAt")
     private Instant createdAt;
 }

@@ -83,6 +83,7 @@ public class AuditPersistenceService {
                     .sourcePutTimestamp(root.path("SourcePutTimestamp").asText(null))
                     .eventTimestamp    (root.path("EventTimestamp").asText(null))
                     .messageId         (root.path("MessageId").asText(null))
+                    .auditType         (root.path("AuditType").asText(null))
                     .auditQueue        (headers.path("auditQueue").asText(null))
                     .routingSlip       (routingSlipDoc)
                     .routeInfo         (routeInfoDoc)
@@ -94,10 +95,11 @@ public class AuditPersistenceService {
             AuditDocument saved = auditRepository.save(document);
 
             log.info("[AuditPersistenceService] Saved audit to MongoDB — id='{}' " +
-                            "originalMessageId='{}' route='{}'",
+                            "originalMessageId='{}' route='{}' auditType='{}'",
                     saved.getId(),
                     saved.getOriginalMessageId(),
-                    saved.getRouteInfo() != null ? saved.getRouteInfo().getRouteName() : "N/A");
+                    saved.getRouteInfo() != null ? saved.getRouteInfo().getRouteName() : "N/A",
+                    saved.getAuditType());
 
         } catch (Exception e) {
             log.error("[AuditPersistenceService] Failed to parse/save audit JSON — {}",

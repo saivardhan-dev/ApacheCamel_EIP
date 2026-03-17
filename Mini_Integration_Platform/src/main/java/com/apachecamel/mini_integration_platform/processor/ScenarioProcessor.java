@@ -26,7 +26,7 @@ import java.time.Instant;
  * │ RoutingSlip_CountryCode  │ e.g. "WW"                                      │
  * │ RoutingSlip_ScenarioName │ e.g. "Scenario1"                               │
  * │ RoutingSlip_InstanceId   │ e.g. 1                                         │
- * │ ScenarioSourceQueue      │ e.g. "GATEWAY.ENTRY.WW.SCENARIO1.1.IN"         │
+ * │ ScenarioSourceQueue      │ e.g. "GATEWAY.ENTRY.WW.SCENARIO1.1.IN"        │
  * │ CurrentRouteName         │ "Route1"                                       │
  * │ RouteSource              │ Route1's source queue                          │
  * │ RouteTarget              │ Route1's target queue (CORE.ENTRY.SERVICE.IN)  │
@@ -50,6 +50,11 @@ public class ScenarioProcessor implements Processor {
     public static final String ROUTE_SOURCE            = "RouteSource";
     public static final String ROUTE_TARGET            = "RouteTarget";
     public static final String ROUTE_START_TIMESTAMP   = "RouteStartTimestamp";
+
+    /** Stamped by XSLT transformation step — "XML" or "JSON" */
+    public static final String ORIGINAL_FORMAT         = "OriginalFormat";
+    public static final String FORMAT_XML              = "XML";
+    public static final String FORMAT_JSON             = "JSON";
 
     // ── Injected at construction time by ScenarioEntryRoute ───────────────────
     private final Scenario     scenario;
@@ -81,10 +86,14 @@ public class ScenarioProcessor implements Processor {
         exchange.getIn().setHeader(SCENARIO_SOURCE_QUEUE, scenario.getEffectiveSourceQueue());
 
         // ── RouteInfo headers for Route-1 ───────────────────────────────────────
-        exchange.getIn().setHeader(CURRENT_ROUTE_NAME,   route1Config.getRouteName()); // "Route1"
-        exchange.getIn().setHeader(ROUTE_SOURCE,         route1Config.getSource());
-        exchange.getIn().setHeader(ROUTE_TARGET,         route1Config.getTarget());
+        exchange.getIn().setHeader(CURRENT_ROUTE_NAME,    route1Config.getRouteName()); // "Route1"
+        exchange.getIn().setHeader(ROUTE_SOURCE,          route1Config.getSource());
+        exchange.getIn().setHeader(ROUTE_TARGET,          route1Config.getTarget());
         exchange.getIn().setHeader(ROUTE_START_TIMESTAMP, Instant.now().toString());
+
+        // ── Track leg index so CoreProcessingRoute knows Route-1 = index 0 ────
+        // CoreProcessingRoute increments this to find the next leg (Route2 = 1, etc.)
+        exchange.setProperty("CurrentRouteLegIndex", 0);
 
         log.info("[ScenarioProcessor] Headers stamped — messageId='{}' scenario='{}' target='{}'",
                 messageId, scenario.getCacheKey(), route1Config.getTarget());

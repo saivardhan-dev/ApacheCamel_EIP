@@ -90,6 +90,7 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+
         <!-- Spring Data MongoDB -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -101,6 +102,12 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <!-- Camel XSLT — required for .to("xslt:...") in routes -->
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-xslt-starter</artifactId>
         </dependency>
 
         <!-- Spring Boot Mail — Email Notifications via SMTP -->

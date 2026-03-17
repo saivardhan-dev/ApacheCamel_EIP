@@ -107,22 +107,49 @@ public class ScenarioEntryRoute extends RouteBuilder {
                 .log("Route1 [" + routeId + "] exception dispatched (async)")
                 .end()
 
-                // ── Step 1: Stamp all routing headers ─────────────────────────────
-                .process(scenarioProcessor)
-                .log("Route1 [" + routeId + "] received — msgId=${header.OriginalMessageId}")
+                // ── Step 1: Detect format — transform XML → JSON via XSLT ──────────
+                // If body starts with "<" it is XML — apply XSLT stylesheet which
+                // dynamically maps any XML field to a JSON key-value pair.
+                // If body is already JSON — leave untouched, stamp JSON header.
+                // Both paths stamp OriginalFormat header for full traceability.
+                .choice()
+                .when(body().startsWith("<"))
+                .to("xslt:xslt/xml-to-json.xsl")
+                .setHeader(ScenarioProcessor.ORIGINAL_FORMAT,
+                        constant(ScenarioProcessor.FORMAT_XML))
+                .log("Route1 XML transformed to JSON via XSLT")
+                .otherwise()
+                .setHeader(ScenarioProcessor.ORIGINAL_FORMAT,
+                        constant(ScenarioProcessor.FORMAT_JSON))
+                .end()
 
-                // ── Step 2: Forward to CORE.ENTRY.SERVICE.IN  ✅ ─────────────────
+                // ── Step 2: Stamp all routing headers ─────────────────────────────
+                .process(scenarioProcessor)
+                .log("Route1 [" + routeId + "] received — msgId=${header.OriginalMessageId} format=${header.OriginalFormat}")
+
+                // ── Step 2: ENTRY audit — message entering Route1 ─────────────────
+                // eventTimestamp is EMPTY — message has not left the route yet
+                .wireTap("activemq:" + auditQueue)
+                .onPrepare(ex -> {
+                    String json = auditJsonBuilder.buildEntry(ex);
+                    ex.getIn().setBody(json);
+                })
+                .end()
+                .log("Route1 [" + routeId + "] ENTRY audit dispatched (async)")
+
+                // ── Step 3: Forward to CORE.ENTRY.SERVICE.IN  ✅ ─────────────────
                 .to("activemq:" + targetQueue)
                 .log("Route1 [" + routeId + "] forwarded to " + targetQueue)
 
-                // ── Step 3: Audit Route-1 leg — async, non-blocking ───────────────
+                // ── Step 4: EXIT audit — message leaving Route1 ───────────────────
+                // eventTimestamp IS populated — message has been forwarded
                 .wireTap("activemq:" + auditQueue)
                 .onPrepare(ex -> {
-                    String json = auditJsonBuilder.build(ex);
+                    String json = auditJsonBuilder.buildExit(ex);
                     ex.getIn().setBody(json);
                 })
                 .end()
 
-                .log("Route1 [" + routeId + "] audit dispatched (async)");
+                .log("Route1 [" + routeId + "] EXIT audit dispatched (async)");
     }
 }

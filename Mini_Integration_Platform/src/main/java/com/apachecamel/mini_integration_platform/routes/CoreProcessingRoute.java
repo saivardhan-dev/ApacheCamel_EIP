@@ -5,6 +5,7 @@ import com.apachecamel.mini_integration_platform.model.Scenario;
 import com.apachecamel.mini_integration_platform.processor.MessageValidatorProcessor;
 import com.apachecamel.mini_integration_platform.processor.ScenarioProcessor;
 import com.apachecamel.mini_integration_platform.service.AuditJsonBuilder;
+import com.apachecamel.mini_integration_platform.service.DynamicQueueResolver;
 import com.apachecamel.mini_integration_platform.service.ExceptionJsonBuilder;
 import com.apachecamel.mini_integration_platform.service.ScenarioCacheService;
 import lombok.RequiredArgsConstructor;
@@ -55,6 +56,7 @@ public class CoreProcessingRoute extends RouteBuilder {
     private final MessageValidatorProcessor messageValidatorProcessor;
     private final AuditJsonBuilder          auditJsonBuilder;
     private final ExceptionJsonBuilder      exceptionJsonBuilder;
+    private final DynamicQueueResolver      dynamicQueueResolver;
 
     @Value("${app.queue.core-entry:CORE.ENTRY.SERVICE.IN}")
     private String coreEntryQueue;
@@ -91,7 +93,10 @@ public class CoreProcessingRoute extends RouteBuilder {
                 .log("Exception dispatched for leg=${header.CurrentRouteName} (async)")
                 .end()
 
-                // ── Step 1: EhCache lookup → determine and update next route leg ──
+                // ── Step 1a: EhCache lookup → stamp RouteInfo headers only ──────────
+                // DynamicQueueResolver is deliberately NOT called here.
+                // Moving it to Step 3 ensures the ENTRY audit always fires first —
+                // even if queue resolution fails (e.g. missing amount field).
                 .process(exchange -> {
                     String countryCode  = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_COUNTRY,  String.class);
                     String scenarioName = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_SCENARIO, String.class);
@@ -112,7 +117,6 @@ public class CoreProcessingRoute extends RouteBuilder {
 
                     List<RouteConfig> allRoutes = scenario.getRoutes();
 
-                    // Route-1 stamped LegIndex=0. Increment to get next leg.
                     int lastLegIndex = exchange.getProperty(PROP_CURRENT_LEG_INDEX, 0, Integer.class);
                     int nextLegIndex = lastLegIndex + 1;
 
@@ -129,38 +133,93 @@ public class CoreProcessingRoute extends RouteBuilder {
                             nextLeg.getRouteName(), nextLegIndex + 1, allRoutes.size(),
                             scenario.getCacheKey(), nextLeg.getTarget());
 
-                    // Update RouteInfo headers for this leg — AuditJsonBuilder and
-                    // ExceptionJsonBuilder both read these to build their JSON
+                    // Stamp RouteInfo headers — AuditJsonBuilder and ExceptionJsonBuilder
+                    // both read these. RouteTarget is set to the config value for now —
+                    // it will be overwritten by DynamicQueueResolver in Step 3 if needed.
                     exchange.getIn().setHeader(ScenarioProcessor.CURRENT_ROUTE_NAME,    nextLeg.getRouteName());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_SOURCE,          nextLeg.getSource());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET,          nextLeg.getTarget());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_START_TIMESTAMP, Instant.now().toString());
                     exchange.setProperty(PROP_CURRENT_LEG_INDEX, nextLegIndex);
-                    exchange.setProperty("routeTarget",           nextLeg.getTarget());
+
+                    // Store the RouteConfig so Step 3 can access it for CBR resolution
+                    exchange.setProperty("currentLegConfig", nextLeg);
                 })
 
                 .log("Processing leg=${header.CurrentRouteName} scenario=${header.RoutingSlip_ScenarioName}")
 
-                // ── Step 2: Validate message ──────────────────────────────────────
-                // If this throws → onException fires → ExceptionJsonBuilder builds
-                // JSON with the current leg's headers → sent async to exception queue
+                // ── Step 2: ENTRY audit ───────────────────────────────────────────
+                // Fires immediately after headers are stamped — BEFORE validation
+                // and BEFORE DynamicQueueResolver. This guarantees the ENTRY audit
+                // is always recorded even if subsequent steps throw exceptions.
+                // The exception document will show this leg failed — and now the
+                // ENTRY audit confirms the message did reach this leg.
+                .wireTap("activemq:" + auditQueue)
+                .onPrepare(ex -> {
+                    String json = auditJsonBuilder.buildEntry(ex);
+                    ex.getIn().setBody(json);
+                })
+                .end()
+                .log("ENTRY audit dispatched for leg=${header.CurrentRouteName} (async)")
+
+                // ── Step 3: Resolve dynamic target queue ──────────────────────────
+                // DynamicQueueResolver runs HERE — after the ENTRY audit has fired.
+                // If it throws (e.g. missing amount), onException fires and the
+                // exception is recorded — but the ENTRY audit is already safe.
+                .process(exchange -> {
+                    RouteConfig nextLeg = exchange.getProperty("currentLegConfig", RouteConfig.class);
+                    if (nextLeg.isDynamicTypeAmount()) {
+                        String payload  = exchange.getIn().getBody(String.class);
+                        String resolved = dynamicQueueResolver.resolve(payload, nextLeg, exchange);
+                        exchange.setProperty("routeTarget", resolved);
+                        exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET, resolved);
+                    } else {
+                        exchange.setProperty("routeTarget", nextLeg.getTarget());
+                    }
+                })
+
+                // ── Step 4: Validate message ──────────────────────────────────────
                 .process(messageValidatorProcessor)
 
-                // ── Step 3: Forward to this leg's target queue  ✅ ─────────────────
+                // ── Step 5: Forward to this leg's target queue  ✅ ─────────────────
                 .toD("activemq:${exchangeProperty.routeTarget}")
                 .log("Delivered to ${exchangeProperty.routeTarget} — leg=${header.CurrentRouteName}")
 
-                // ── Step 4: Audit this leg — async, non-blocking ──────────────────
-                // AuditJsonBuilder reads the current leg's RouteInfo headers — so
-                // each leg gets its own Audit record with the correct RouteName,
-                // RouteSource, RouteTarget and timestamps.
+                // ── Step 5: Type-only queue — wireTap, async ──────────────────────
+                // Sends a copy to GATEWAY.EXIT.WW.{TYPE}.1.OUT so all messages of
+                // the same type land on one queue regardless of amount bracket.
+                //   Furniture + 800  → GATEWAY.EXIT.WW.FURNITURE.1.OUT
+                //   Furniture + 2000 → GATEWAY.EXIT.WW.FURNITURE.1.OUT  (same queue)
+                //   Cars      + 500  → GATEWAY.EXIT.WW.CARS.1.OUT
+                // Only fires for dynamic routes — detected by HIGHVALUE/LOWVALUE
+                // in the resolved routeTarget. Static routes are unaffected.
+                .process(exchange -> {
+                    String routeTarget = exchange.getProperty("routeTarget", String.class);
+                    if (routeTarget != null
+                            && (routeTarget.contains("HIGHVALUE") || routeTarget.contains("LOWVALUE"))) {
+                        String payload       = exchange.getIn().getBody(String.class);
+                        String typeOnlyQueue = dynamicQueueResolver.resolveTypeOnlyQueue(payload, exchange);
+                        exchange.setProperty("typeOnlyQueue", typeOnlyQueue);
+                    } else {
+                        exchange.setProperty("typeOnlyQueue", null);
+                    }
+                })
+                .choice()
+                .when(exchange -> exchange.getProperty("typeOnlyQueue") != null)
+                .wireTap("activemq:${exchangeProperty.typeOnlyQueue}")
+                .end()
+                .log("Type-only copy sent to ${exchangeProperty.typeOnlyQueue} (async)")
+                .end()
+
+                // ── Step 6: EXIT audit — message leaving this route leg ───────────
+                // eventTimestamp IS populated — message has been forwarded
                 .wireTap("activemq:" + auditQueue)
                 .onPrepare(ex -> {
-                    String json = auditJsonBuilder.build(ex);
+                    String json = auditJsonBuilder.buildExit(ex);
                     ex.getIn().setBody(json);
                 })
                 .end()
 
-                .log("Audit dispatched for leg=${header.CurrentRouteName} (async)");
+                .log("EXIT audit dispatched for leg=${header.CurrentRouteName} (async)");
     }
 }
