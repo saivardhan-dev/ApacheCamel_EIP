@@ -1,119 +1,103 @@
-## Integration platform:
+# Enterprise Integration System
 
-Integration platforms exist because modern enterprises have dozens of systems built on different technologies that all need to talk to each other. Without a central integration layer, you end up with point-to-point spaghetti, exponentially growing connections, no visibility, tight coupling, and no resilience. An integration platform like IBM ACE solves this by acting as a central hub that handles routing, transformation, protocol mediation, guaranteed delivery, security, and monitoring in one place. Every system only needs to know about the integration platform, not about every other system in the enterprise. Our Mini Integration Platform demonstrates these same principles at a smaller scale using Apache Camel, ActiveMQ, EhCache, and MongoDB.
+"A config-driven enterprise message routing platform built on Apache Camel — where adding a new scenario, changing routing rules, or supporting a new message structure requires zero Java code changes."
 
-Architecture Flow: 
+## Architecture
 ```text
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│  STARTUP                                                                                    │
-│                                                                                             │
-│  Scenarios.json ──► scenarioCache (EhCache)       ExceptionCodeList.json ──► exceptionCodeCache   │
-│                           │                                                                 │
-│                           ▼                                                                 │
-│            Camel registers routes at startup                                                │
-│            ScenarioEntryRoute (Route-1 × 2)  +  CoreProcessingRoute (shared)              │
-│            AuditRoute (consumer)            +  ExceptionRoute (consumer)               │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
-
-
+"This platform is inspired by IBM ACE. Every routing decision is driven by Scenarios.json — no Java changes needed."
 Producer
-   │
-   ▼
-GATEWAY.ENTRY.WW.SCENARIO1.1.IN
-   │
-   ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Route-1  (ScenarioEntryRoute)                                                            │
-│                                                                                             │
-│  ScenarioProcessor                                                                        │
-│     stamp OriginalMessageId, SourcePutTimestamp                                             │
-│     stamp RoutingSlip_Country, RoutingSlip_Scenario, RoutingSlip_InstanceId                │
-│     stamp RouteInfo_RouteName=Route1, RouteSource, RouteTarget                              │
-│     stamp LegIndex = 0                                                                      │
-│                                                                                             │
-│  .to(CORE.ENTRY.SERVICE.IN)  ✅  main job done                                              │
-│                                                                                             │
-│  wireTap fires ──────────────────────────────────────────────────────────────────────────► │
-│  (async — separate thread — main thread released immediately)                               │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
-   │                                              │
-   │ main thread continues                        │ wireTap thread
-   ▼                                             ▼
-CORE.ENTRY.SERVICE.IN                           AuditJsonBuilder.build()
-                                                   reads RouteInfo headers
-                                                   builds Route-1 Audit JSON
-                                                        │
-                                                        ▼
-                                                 COMMON.AUDIT.SERVICE.IN
-                                                        │
-                                                        ▼
-                                                 AuditRoute → AuditPersistenceService
-                                                        │
-                                                        ▼
-                                                 MongoDB "audits" { Route1 leg }
+    ↓
+GATEWAY.ENTRY.WW.SCENARIO2.1.IN  ← entry queue
+    ↓
+ScenarioEntryRoute (Route1)
+    ↓
+CORE.ENTRY.SERVICE.IN            ← internal queue
+    ↓
+CoreProcessingRoute (Route2)
+    ↓
+GATEWAY.EXIT.WW.SCENARIO2.{TYPE}.1.OUT  ← dynamic exit queue
+                                             (CBR decides)
 
-
-CORE.ENTRY.SERVICE.IN
-   │
-   ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│  CoreProcessingRoute  (shared — all scenarios, all legs Route-2+)                          │
-│                                                                                             │
-│  EhCache lookup                                                                           │
-│     read RoutingSlip headers → getScenario(country, name, instanceId)                       │
-│     LegIndex++ (0→1) → Routes[1] = Route2                                                  │
-│     update RouteInfo_RouteName=Route2, RouteSource, RouteTarget                             │
-│                                                                                             │
-│  MessageValidatorProcessor
-│     validate JSON body                                                                      │
-│          │                                                                                  │
-│          ├── type = ORDER ──────────────────────────────────────────────────────────────►   │
-│          │                                                                                  │
-│          └── type = ERROR ──► throws RuntimeException                                      │
-└──────────────────────────────────────┬──────────────────────────────┬──────────────────────┘
-                                       │                              │
-              HAPPY PATH ─────────────┘                              └───────── EXCEPTION PATH
-                    │                                                              │
-                    ▼                                                              ▼
-     .toD(GATEWAY.EXIT.WW.SCENARIO1.1.OUT)  ✅              onException handler fires
-                    │                                                              │
-     wireTap fires ──┘                                       wireTap fires ──────────┘
-     (async — separate thread)                               (async — separate thread)
-                    │                                                              │
-                    ▼                                                              ▼
-     AuditJsonBuilder.build()                          ExceptionJsonBuilder.build()
-       current leg RouteInfo headers                      reads EXCEPTION_CAUGHT prop
-       builds Route-2 Audit JSON                          reads current leg headers
-                    │                                      resolves code from EhCache
-                    ▼                                                              │
-     COMMON.AUDIT.SERVICE.IN                                                       ▼
-                    │                                          COMMON.EXCEPTION.SERVICE.IN
-                    ▼                                                              │
-     AuditRoute → AuditPersistenceService                                         ▼
-                    │                                      ExceptionRoute → ExceptionPersistenceService
-                    ▼                                                              │
-     MongoDB "audits" { Route2 leg }                                              ▼
-                                                           MongoDB "exceptions" {
-                                                             exceptionCode: ExceptionCode3
-                                                             routeName: Route2
-                                                             endTimestamp: ""
-                                                             stacktrace: ...
-                                                           }
-
-
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│  MONGODB RESULT — linked by OriginalMessageId                                               │
-│                                                                                             │
-│  Happy Path:    audits × 2  (Route1 + Route2)       exceptions × 0                        │
-│  Exception Path:audits × 1  (Route1 only)           exceptions × 1  (Route2, Code3)      │
-│                                                                                             │
-│  Correlate:  db.audits.find({ originalMessageId: "ID:xyz" })                              │
-│              db.exceptions.find({ originalMessageId: "ID:xyz" })                          │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
+Side channels:
+  COMMON.AUDIT.SERVICE.IN      → MongoDB (audits)
+  COMMON.EXCEPTION.SERVICE.IN  → MongoDB (exceptions) + AI + Email
+  COMMON.DLQ.SERVICE.IN        → raw failed payload, no consumer
 ```
- 
-Collections in Mongodb:
+
+* Scenarios.json:
 ```text
-Audit DB      → audit_logs collection
-Exception DB  → exception_logs collection
+{
+  "ScenarioName": "Scenario2",
+  "Routes": [
+    {
+      "RouteName": "Route1",
+      "service": { "type": "XSLT" }       ← XML transformation
+    },
+    {
+      "RouteName": "Route2",
+      "service": {
+        "type": "DYNAMIC_TYPE_AMOUNT",
+        "queuePattern": "GATEWAY.EXIT.WW.{SCENARIO}.{TYPE}.1.OUT",
+        "rules": [
+          { "leftOperand": "$.Messages.ElectronicsDetails.ElectronicsDetail.DeviceName" },
+          { "leftOperand": "$.Messages.ElectronicsDetails.ElectronicsDetail.Price",
+            "threshold": 1000 }
+        ]
+      }
+    }
+  ]
+}
+```
+Happy Path — Single Message
+```text
+{
+  "ApplicationID": "ID-001",
+  "Messages": {
+    "ElectronicsDetails": {
+      "ElectronicsDetail": { "DeviceName": "TV", "Price": 8000 }
+    }
+  }
+}
+Route1 ENTRY ✅
+Route1 EXIT  ✅
+Route2 ENTRY ✅
+Route2 EXIT  ✅
+```
+* "Route1 handles transformation. Route2 has the CBR rules — JSONPath expressions that navigate directly into the message structure. The platform reads these at startup and builds the routes dynamically."
+* "The platform reads Scenarios.json, loads everything into EhCache, and automatically creates Camel consumers for every scenario's entry queue. No hardcoded queue names anywhere in Java."
+* The message traveled through Route1 and Route2. The CBR evaluated the JSONPath, extracted the parent key ElectronicsDetail as the queue segment, and routed dynamically. Four audit records in MongoDB — one for each leg.
+  
+Failure Path — Price Below Threshold
+```text
+{
+  "ApplicationID": "ID-002",
+  "Messages": {
+    "ElectronicsDetails": {
+      "ElectronicsDetail": { "DeviceName": "TV", "Price": 800 }
+    }
+  }
+}
+[DynamicQueueResolver] DOUBLE '$.Messages.ElectronicsDetails.ElectronicsDetail.Price'
+                       = 800.0 LTE 1000 → MATCH
+→ throws RuntimeException: Amount 800.0 below minimum threshold 1000.0
+[CoreProcessingRoute]  onException fired
+[ExceptionJsonBuilder] Built exception JSON — code='ExceptionCode4'
+→ wireTap 1 → COMMON.EXCEPTION.SERVICE.IN
+→ wireTap 2 → COMMON.DLQ.SERVICE.IN
+[ExceptionRoute]       Persisted — id='...' code='ExceptionCode4'
+[ExceptionAnalysisAgent] Agent turn 1/6 → checkAuditHistory
+[ExceptionAnalysisAgent] Agent turn 2/6 → checkExceptionDetail
+[ExceptionAnalysisAgent] Agent produced final answer
+[NotificationService]  Email sent → subject='[LOW] Exception Alert — Route2 | Scenario2'
+```
+* The DOUBLE rule fired. The message was rejected, sent to DLQ, persisted to MongoDB, and the AI agent analysed the full journey — which routes succeeded, which failed, and why. An email was sent automatically.
+```text
+  ✅ Config-driven routing       — Scenarios.json drives everything
+  ✅ Dynamic CBR                 — JSONPath rules, any message structure
+  ✅ XML + JSON support          — XSLT transformation on Route1
+  ✅ Full audit trail            — MongoDB, 4 records per message
+  ✅ AI exception analysis       — Groq LLaMA, agentic tool loop
+  ✅ Email notifications         — Gmail SMTP, journey + analysis
+  ✅ DLQ                         — raw payload preserved
+  ✅ Zero Java for new scenarios — only Scenarios.json changes
 ```
