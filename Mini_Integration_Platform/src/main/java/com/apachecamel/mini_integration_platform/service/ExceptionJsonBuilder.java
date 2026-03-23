@@ -1,6 +1,5 @@
 package com.apachecamel.mini_integration_platform.service;
 
-import com.apachecamel.mini_integration_platform.service.ExceptionCodeService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
@@ -118,7 +117,11 @@ public class ExceptionJsonBuilder {
 
     } catch (Exception e) {
       log.error("[ExceptionJsonBuilder] Failed to build exception JSON — {}", e.getMessage(), e);
-      return null;
+      // Return minimal fallback JSON so ExceptionPersistenceService
+      // never receives null — a null body causes NPE in the consumer
+      return "{\"ExceptionCode\":\"ExceptionCode3\"," +
+              "\"ExceptionStacktrace\":\"" + e.getMessage() + "\"," +
+              "\"OriginalMessageId\":\"UNKNOWN\"}";
     }
   }
 

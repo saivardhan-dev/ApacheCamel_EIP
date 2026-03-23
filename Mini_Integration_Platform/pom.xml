@@ -104,6 +104,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- JSONPath — field mapping evaluation in DynamicQueueResolver -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
         <!-- Camel XSLT — required for .to("xslt:...") in routes -->
         <dependency>
             <groupId>org.apache.camel.springboot</groupId>

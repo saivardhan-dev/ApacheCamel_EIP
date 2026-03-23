@@ -13,17 +13,19 @@ import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * AgentToolService
  *
- * Implements the two tools available to the ExceptionAnalysisAgent:
+ * Implements the two tools available to the ExceptionAnalysisAgent.
  *
  * ┌─────────────────────────────────────────────────────────────────────┐
  * │  Tool 1: checkAuditHistory(originalMessageId)                       │
  * │    → Queries MongoDB "audits" collection                            │
- * │    → Returns all route legs the message completed successfully      │
- * │    → Sorted by startTimestamp (chronological journey order)         │
+ * │    → Returns only EXIT audit records (one per successful route leg) │
+ * │    → ENTRY audits filtered out — agent sees one clean path entry    │
+ * │    → Sorted chronologically by startTimestamp                       │
  * │                                                                     │
  * │  Tool 2: checkExceptionDetail(originalMessageId)                    │
  * │    → Queries MongoDB "exceptions" collection                        │
@@ -31,8 +33,20 @@ import java.util.List;
  * │    → Includes exceptionCode, stacktrace, routeInfo                  │
  * └─────────────────────────────────────────────────────────────────────┘
  *
- * Both tools return JSON strings that are fed back into the agent's
- * reasoning loop as tool_result messages.
+ * Why EXIT only for audit history:
+ *   Each route leg produces 2 audit documents — ENTRY and EXIT.
+ *   ENTRY = message arrived at the leg (no endTimestamp yet)
+ *   EXIT  = message left the leg successfully (endTimestamp populated)
+ *
+ *   The agent only needs EXIT records to reconstruct the journey —
+ *   EXIT confirms the leg completed. Showing ENTRY too would give
+ *   Route1 twice in the journey narrative which is misleading.
+ *
+ *   Result for a message that completed Route1 and failed at Route2:
+ *     checkAuditHistory → [ { Route1, EXIT, SUCCESS } ]
+ *     checkExceptionDetail → { Route2, FAILED, ExceptionCode2 }
+ *
+ *   The agent sees: Route1 succeeded, Route2 failed. Clean and correct.
  */
 @Slf4j
 @Service
@@ -46,52 +60,52 @@ public class AgentToolService {
   // ── Tool 1: checkAuditHistory ──────────────────────────────────────────────
 
   /**
-   * Queries the "audits" MongoDB collection for all route legs
-   * completed by the message identified by originalMessageId.
+   * Returns only EXIT audit records for the given message.
+   * One record per successfully completed route leg.
    *
-   * Returns a JSON string representing the ordered list of audit records:
-   * [
-   *   {
-   *     "routeName":       "Route1",
-   *     "source":          "GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
-   *     "target":          "CORE.ENTRY.SERVICE.IN",
-   *     "startTimestamp":  "2026-03-13T14:32:34.324Z",
-   *     "endTimestamp":    "2026-03-13T14:32:34.371Z",
-   *     "status":          "SUCCESS"
-   *   },
-   *   ...
-   * ]
+   * ENTRY records are filtered out so the agent sees a clean
+   * one-entry-per-leg journey — not two entries per leg.
    *
    * @param originalMessageId  the OriginalMessageId header stamped by ScenarioProcessor
-   * @return JSON string of audit legs, or an error JSON if lookup fails
+   * @return JSON array of EXIT audit legs in chronological order
    */
   public String checkAuditHistory(String originalMessageId) {
     log.info("[AgentToolService] checkAuditHistory — originalMessageId='{}'", originalMessageId);
     try {
-      List<AuditDocument> audits = auditRepository
+      List<AuditDocument> allAudits = auditRepository
               .findByOriginalMessageId(originalMessageId);
 
-      // Sort chronologically by startTimestamp so the agent sees
-      // the journey in the correct order
-      audits.sort(Comparator.comparing(
+      // ── Filter: EXIT audits only ───────────────────────────────────────
+      // EXIT = message successfully left the route leg
+      // ENTRY = message arrived but may not have completed — excluded
+      List<AuditDocument> exitAudits = allAudits.stream()
+              .filter(a -> "EXIT".equalsIgnoreCase(a.getAuditType()))
+              .collect(Collectors.toList());
+
+      // ── Sort chronologically ───────────────────────────────────────────
+      exitAudits.sort(Comparator.comparing(
               a -> a.getRouteInfo() != null ? a.getRouteInfo().getStartTimestamp() : "",
               Comparator.nullsFirst(Comparator.naturalOrder())
       ));
 
       ArrayNode result = objectMapper.createArrayNode();
 
-      for (AuditDocument audit : audits) {
+      for (AuditDocument audit : exitAudits) {
         ObjectNode leg = objectMapper.createObjectNode();
         leg.put("routeName",      safe(audit.getRouteInfo() != null ? audit.getRouteInfo().getRouteName()      : null));
         leg.put("source",         safe(audit.getRouteInfo() != null ? audit.getRouteInfo().getSource()         : null));
         leg.put("target",         safe(audit.getRouteInfo() != null ? audit.getRouteInfo().getTarget()         : null));
         leg.put("startTimestamp", safe(audit.getRouteInfo() != null ? audit.getRouteInfo().getStartTimestamp() : null));
         leg.put("endTimestamp",   safe(audit.getRouteInfo() != null ? audit.getRouteInfo().getEndTimestamp()   : null));
+        leg.put("auditType",      "EXIT");
         leg.put("status",         "SUCCESS");
         result.add(leg);
       }
 
-      log.info("[AgentToolService] checkAuditHistory — found {} audit leg(s)", audits.size());
+      log.info("[AgentToolService] checkAuditHistory — found {} EXIT leg(s) " +
+                      "(filtered from {} total audit records)",
+              exitAudits.size(), allAudits.size());
+
       return objectMapper.writeValueAsString(result);
 
     } catch (Exception e) {
@@ -106,17 +120,6 @@ public class AgentToolService {
    * Queries the "exceptions" MongoDB collection for the exception record
    * associated with the given originalMessageId.
    *
-   * Returns a JSON string of the exception detail:
-   * {
-   *   "routeName":            "Route2",
-   *   "source":               "CORE.ENTRY.SERVICE.IN",
-   *   "target":               "GATEWAY.EXIT.WW.SCENARIO1.1.OUT",
-   *   "exceptionCode":        "ExceptionCode3",
-   *   "exceptionStacktrace":  "java.lang.RuntimeException: ...",
-   *   "payload":              "{ type: ERROR }",
-   *   "eventTimestamp":       "2026-03-13T14:32:34.374Z"
-   * }
-   *
    * @param originalMessageId  the OriginalMessageId header stamped by ScenarioProcessor
    * @return JSON string of exception detail, or not-found JSON
    */
@@ -127,10 +130,10 @@ public class AgentToolService {
               .findByOriginalMessageId(originalMessageId);
 
       if (exceptions.isEmpty()) {
-        return "{\"error\": \"No exception record found for originalMessageId: " + originalMessageId + "\"}";
+        return "{\"error\": \"No exception record found for originalMessageId: "
+                + originalMessageId + "\"}";
       }
 
-      // Take the most recent exception (there should only be one per message)
       ExceptionDocument exc = exceptions.get(0);
 
       ObjectNode result = objectMapper.createObjectNode();

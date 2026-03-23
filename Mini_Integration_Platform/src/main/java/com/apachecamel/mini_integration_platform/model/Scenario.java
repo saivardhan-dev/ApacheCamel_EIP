@@ -6,20 +6,34 @@ import lombok.Data;
 import java.util.List;
 
 /**
+ * Scenario
+ *
  * Maps to one Scenario object in Scenarios.json.
  *
- * Example JSON:
+ * Each scenario defines:
+ *   - Routing topology via the Routes array
+ *   - Optional per-route services embedded inside each RouteConfig
+ *
+ * Scenario1 — no services, static routing:
  * {
  *   "CountryCode":  "WW",
  *   "ScenarioName": "Scenario1",
  *   "InstanceId":   1,
  *   "SourceQueue":  "GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
  *   "TargetQueue":  "GATEWAY.ENTRY.WW.SCENARIO1.1.OUT",
- *   "Routes": [ { "RouteName":"Route1", ... }, { "RouteName":"Route2", ... } ]
+ *   "Routes": [
+ *     { "RouteName": "Route1", "source": "...", "target": "..." },
+ *     { "RouteName": "Route2", "source": "...", "target": "..." }
+ *   ]
  * }
  *
- * NOTE: Scenario2 in the JSON uses "InboundQueue" instead of "SourceQueue".
- *       Both fields are mapped; getEffectiveSourceQueue() returns whichever is non-null.
+ * Scenario2 — XSLT on Route1, CBR on Route2:
+ * {
+ *   "Routes": [
+ *     { "RouteName": "Route1", ..., "service": { "type": "XSLT", ... } },
+ *     { "RouteName": "Route2", ..., "service": { "type": "DYNAMIC_TYPE_AMOUNT", ... } }
+ *   ]
+ * }
  */
 @Data
 public class Scenario {
@@ -33,11 +47,10 @@ public class Scenario {
     @JsonProperty("InstanceId")
     private int instanceId;
 
-    /** Used by Scenario1 */
     @JsonProperty("SourceQueue")
     private String sourceQueue;
 
-    /** Used by Scenario2 (different key name in JSON) */
+    /** Alternative key used by some scenarios */
     @JsonProperty("InboundQueue")
     private String inboundQueue;
 
@@ -47,22 +60,34 @@ public class Scenario {
     @JsonProperty("Routes")
     private List<RouteConfig> routes;
 
+    /**
+     * Optional splitter config — present only when this scenario
+     * accepts multi-message envelope payloads.
+     * Null for scenarios that only accept single messages.
+     */
+    @JsonProperty("splitter")
+    private SplitterConfig splitter;
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     /**
      * Returns the correct source queue regardless of which JSON key was used.
-     * Scenario1 → SourceQueue,  Scenario2 → InboundQueue
      */
     public String getEffectiveSourceQueue() {
         return (sourceQueue != null) ? sourceQueue : inboundQueue;
     }
 
     /**
-     * EhCache key: "WW_Scenario1_1"
-     * Format: {CountryCode}_{ScenarioName}_{InstanceId}
+     * EhCache key — format: {CountryCode}_{ScenarioName}_{InstanceId}
+     * e.g. "WW_Scenario1_1"
      */
     public String getCacheKey() {
         return countryCode + "_" + scenarioName + "_" + instanceId;
+    }
+
+    /** Returns true if this scenario has an active splitter configured */
+    public boolean hasSplitter() {
+        return splitter != null && splitter.isActive();
     }
 
     /**
@@ -77,12 +102,3 @@ public class Scenario {
                 .orElse(null);
     }
 }
-
-
-
-
-
-
-
-
-

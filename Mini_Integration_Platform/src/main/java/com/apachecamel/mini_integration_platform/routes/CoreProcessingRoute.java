@@ -2,6 +2,7 @@ package com.apachecamel.mini_integration_platform.routes;
 
 import com.apachecamel.mini_integration_platform.model.RouteConfig;
 import com.apachecamel.mini_integration_platform.model.Scenario;
+import com.apachecamel.mini_integration_platform.model.ServiceConfig;
 import com.apachecamel.mini_integration_platform.processor.MessageValidatorProcessor;
 import com.apachecamel.mini_integration_platform.processor.ScenarioProcessor;
 import com.apachecamel.mini_integration_platform.service.AuditJsonBuilder;
@@ -18,33 +19,26 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * CoreProcessingRoute — handles ALL route legs after Route-1 for every scenario.
+ * CoreProcessingRoute
  *
- * Flow (happy path — per leg):
- * ┌──────────────────────────────────────────────────────────────────────┐
- * │  CORE.ENTRY.SERVICE.IN                                               │
- * │       ↓                                                              │
- * │  Step 1: EhCache lookup → increment LegIndex → update RouteInfo     │
- * │       ↓                                                              │
- * │  Step 2: MessageValidatorProcessor                                   │
- * │       ↓                                                              │
- * │  Step 3: .toD(exit queue)   ✅ MAIN JOB DONE                        │
- * │       ↓                                                              │
- * │  Step 4: wireTap(COMMON.AUDIT.SERVICE.IN)  ── async thread ──────►  │
- * │       onPrepare: AuditJsonBuilder.build() → setBody(auditJson)      │
- * │  THREAD RELEASED                                                     │
- * └──────────────────────────────────────────────────────────────────────┘
+ * Handles ALL route legs after Route-1 for every scenario.
+ * Shared single route — all scenarios pass through here.
  *
- * Flow (exception path):
+ * Services are resolved from the Scenario's Services array at runtime:
+ *   scenario.findService("Route2") → ServiceConfig
+ *
+ * If a DYNAMIC_TYPE_AMOUNT service is found → DynamicQueueResolver resolves queue.
+ * If no service found → static target from RouteConfig is used.
+ *
+ * Step order:
  * ┌──────────────────────────────────────────────────────────────────────┐
- * │  Any step throws                                                     │
- * │       ↓                                                              │
- * │  onException handler                                                 │
- * │       ↓                                                              │
- * │  wireTap(COMMON.EXCEPTION.SERVICE.IN)  ── async thread ──────────►  │
- * │       onPrepare: ExceptionJsonBuilder.build() → setBody(json)       │
- * │       reads EXCEPTION_CAUGHT + current leg headers                  │
- * │  THREAD RELEASED                                                     │
+ * │  Step 1a: EhCache lookup → stamp RouteInfo headers                   │
+ * │  Step 2:  ENTRY audit wireTap   ← always fires                      │
+ * │  Step 3:  Service lookup → resolve target queue (CBR or static)      │
+ * │  Step 4:  MessageValidatorProcessor                                  │
+ * │  Step 5:  .toD(routeTarget)     ← forward message                   │
+ * │  Step 6:  Type-only wireTap     ← only if CBR service configured    │
+ * │  Step 7:  EXIT audit wireTap                                         │
  * └──────────────────────────────────────────────────────────────────────┘
  */
 @Slf4j
@@ -67,6 +61,11 @@ public class CoreProcessingRoute extends RouteBuilder {
     @Value("${app.queue.exception:COMMON.EXCEPTION.SERVICE.IN}")
     private String exceptionQueue;
 
+    @Value("${app.queue.dlq:COMMON.DLQ.SERVICE.IN}")
+    private String dlqQueue;
+
+
+
     private static final String PROP_CURRENT_LEG_INDEX = "CurrentRouteLegIndex";
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -78,25 +77,28 @@ public class CoreProcessingRoute extends RouteBuilder {
         from("activemq:" + coreEntryQueue)
                 .routeId("route-core-processing")
 
-                // ── Exception handler — async, non-blocking ───────────────────────
-                // ExceptionJsonBuilder reads EXCEPTION_CAUGHT from the exchange and
-                // the current leg's RouteInfo headers — so it always knows exactly
-                // which leg failed (Route2, Route3, etc.) and builds the correct JSON.
+                // ── Exception handler ─────────────────────────────────────────────
                 .onException(Exception.class)
                 .handled(true)
+                // ── wireTap 1: Exception queue → ExceptionRoute ───────────────
+                // ExceptionRoute consumes, reads ExceptionCode from EhCache,
+                // persists to MongoDB, triggers AI analysis + email.
                 .wireTap("activemq:" + exceptionQueue)
                 .onPrepare(ex -> {
                     String json = exceptionJsonBuilder.build(ex);
                     ex.getIn().setBody(json);
                 })
                 .end()
-                .log("Exception dispatched for leg=${header.CurrentRouteName} (async)")
+                // ── wireTap 2: DLQ → raw payload only, no consumer ───────────
+                // Original message payload stored as-is for inspection.
+                // No headers, no metadata — just the raw body.
+                .wireTap("activemq:" + dlqQueue)
+                .end()
+                .log("Exception + DLQ dispatched for leg=${header.CurrentRouteName} (async)")
                 .end()
 
-                // ── Step 1a: EhCache lookup → stamp RouteInfo headers only ──────────
-                // DynamicQueueResolver is deliberately NOT called here.
-                // Moving it to Step 3 ensures the ENTRY audit always fires first —
-                // even if queue resolution fails (e.g. missing amount field).
+                // ── Step 1a: EhCache lookup → stamp RouteInfo headers ─────────────
+                // DynamicQueueResolver NOT called here — ENTRY audit must fire first.
                 .process(exchange -> {
                     String countryCode  = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_COUNTRY,  String.class);
                     String scenarioName = exchange.getIn().getHeader(ScenarioProcessor.ROUTING_SLIP_SCENARIO, String.class);
@@ -116,7 +118,6 @@ public class CoreProcessingRoute extends RouteBuilder {
                     }
 
                     List<RouteConfig> allRoutes = scenario.getRoutes();
-
                     int lastLegIndex = exchange.getProperty(PROP_CURRENT_LEG_INDEX, 0, Integer.class);
                     int nextLegIndex = lastLegIndex + 1;
 
@@ -133,27 +134,23 @@ public class CoreProcessingRoute extends RouteBuilder {
                             nextLeg.getRouteName(), nextLegIndex + 1, allRoutes.size(),
                             scenario.getCacheKey(), nextLeg.getTarget());
 
-                    // Stamp RouteInfo headers — AuditJsonBuilder and ExceptionJsonBuilder
-                    // both read these. RouteTarget is set to the config value for now —
-                    // it will be overwritten by DynamicQueueResolver in Step 3 if needed.
+                    // Stamp RouteInfo headers
                     exchange.getIn().setHeader(ScenarioProcessor.CURRENT_ROUTE_NAME,    nextLeg.getRouteName());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_SOURCE,          nextLeg.getSource());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET,          nextLeg.getTarget());
                     exchange.getIn().setHeader(ScenarioProcessor.ROUTE_START_TIMESTAMP, Instant.now().toString());
                     exchange.setProperty(PROP_CURRENT_LEG_INDEX, nextLegIndex);
 
-                    // Store the RouteConfig so Step 3 can access it for CBR resolution
-                    exchange.setProperty("currentLegConfig", nextLeg);
+                    // Store leg config and static target for use in Steps 3 and 6
+                    exchange.setProperty("currentLegConfig",  nextLeg);
+                    exchange.setProperty("currentRouteName",  nextLeg.getRouteName());
+                    exchange.setProperty("currentLegTarget",  nextLeg.getTarget());
                 })
 
                 .log("Processing leg=${header.CurrentRouteName} scenario=${header.RoutingSlip_ScenarioName}")
 
                 // ── Step 2: ENTRY audit ───────────────────────────────────────────
-                // Fires immediately after headers are stamped — BEFORE validation
-                // and BEFORE DynamicQueueResolver. This guarantees the ENTRY audit
-                // is always recorded even if subsequent steps throw exceptions.
-                // The exception document will show this leg failed — and now the
-                // ENTRY audit confirms the message did reach this leg.
+                // Fires BEFORE service resolution — guaranteed even if CBR throws.
                 .wireTap("activemq:" + auditQueue)
                 .onPrepare(ex -> {
                     String json = auditJsonBuilder.buildEntry(ex);
@@ -162,64 +159,92 @@ public class CoreProcessingRoute extends RouteBuilder {
                 .end()
                 .log("ENTRY audit dispatched for leg=${header.CurrentRouteName} (async)")
 
-                // ── Step 3: Resolve dynamic target queue ──────────────────────────
-                // DynamicQueueResolver runs HERE — after the ENTRY audit has fired.
-                // If it throws (e.g. missing amount), onException fires and the
-                // exception is recorded — but the ENTRY audit is already safe.
+                // ── Step 3: Validate + deserialise message ────────────────────────
+                // MessageValidatorProcessor deserialises the JSON body into a
+                // MessagePayload object and stores it on the exchange as property
+                // "messagePayload". DynamicQueueResolver reads it in Step 4.
+                // Must run BEFORE the resolver — resolver depends on this property.
+                .process(messageValidatorProcessor)
+
+                // ── Step 4: Service — read inline from RouteConfig ───────────────
+                // Reads MessagePayload from exchange property set in Step 3.
+                // Scenario1 Route2: service = null → use static target
+                // Scenario2 Route2: service.type = DYNAMIC_TYPE_AMOUNT → CBR
                 .process(exchange -> {
-                    RouteConfig nextLeg = exchange.getProperty("currentLegConfig", RouteConfig.class);
-                    if (nextLeg.isDynamicTypeAmount()) {
-                        String payload  = exchange.getIn().getBody(String.class);
-                        String resolved = dynamicQueueResolver.resolve(payload, nextLeg, exchange);
-                        exchange.setProperty("routeTarget", resolved);
-                        exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET, resolved);
+                    RouteConfig currentLeg   = exchange.getProperty("currentLegConfig",  RouteConfig.class);
+                    String      staticTarget = exchange.getProperty("currentLegTarget",   String.class);
+
+                    ServiceConfig service = currentLeg.getService();
+
+                    if (service != null && service.isDynamicTypeAmount()) {
+                        // CBR service found — resolve queue from rules
+                        // Returns null if one or more placeholders could not be filled
+                        // because the required fields were absent from the payload
+                        String resolved = dynamicQueueResolver.resolve(service, exchange);
+
+                        if (resolved == null) {
+                            // Unresolved placeholders — payload fields did not match rules
+                            // Route to DLQ — full message stored, no consumer
+                            log.warn("[CoreProcessingRoute] CBR could not resolve queue — " +
+                                    "routing to DLQ: {}", dlqQueue);
+                            exchange.setProperty("routeTarget", dlqQueue);
+                            exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET, dlqQueue);
+                            // Also send to exception processing for MongoDB + AI
+                            exchange.setProperty("sendToExceptionProcessing", true);
+                        } else {
+                            exchange.setProperty("routeTarget", resolved);
+                            exchange.getIn().setHeader(ScenarioProcessor.ROUTE_TARGET, resolved);
+                            log.info("[CoreProcessingRoute] CBR resolved — service='{}' queue='{}'",
+                                    service.getServiceId(), resolved);
+                        }
                     } else {
-                        exchange.setProperty("routeTarget", nextLeg.getTarget());
+                        // No CBR service — use static target from RouteConfig
+                        exchange.setProperty("routeTarget", staticTarget);
+                        log.info("[CoreProcessingRoute] Static routing — target='{}'", staticTarget);
                     }
                 })
 
-                // ── Step 4: Validate message ──────────────────────────────────────
-                .process(messageValidatorProcessor)
-
-                // ── Step 5: Forward to this leg's target queue  ✅ ─────────────────
+                // ── Step 5: Forward to resolved target queue ✅ ───────────────────
                 .toD("activemq:${exchangeProperty.routeTarget}")
                 .log("Delivered to ${exchangeProperty.routeTarget} — leg=${header.CurrentRouteName}")
 
-                // ── Step 5: Type-only queue — wireTap, async ──────────────────────
-                // Sends a copy to GATEWAY.EXIT.WW.{TYPE}.1.OUT so all messages of
-                // the same type land on one queue regardless of amount bracket.
-                //   Furniture + 800  → GATEWAY.EXIT.WW.FURNITURE.1.OUT
-                //   Furniture + 2000 → GATEWAY.EXIT.WW.FURNITURE.1.OUT  (same queue)
-                //   Cars      + 500  → GATEWAY.EXIT.WW.CARS.1.OUT
-                // Only fires for dynamic routes — detected by HIGHVALUE/LOWVALUE
-                // in the resolved routeTarget. Static routes are unaffected.
-                .process(exchange -> {
-                    String routeTarget = exchange.getProperty("routeTarget", String.class);
-                    if (routeTarget != null
-                            && (routeTarget.contains("HIGHVALUE") || routeTarget.contains("LOWVALUE"))) {
-                        String payload       = exchange.getIn().getBody(String.class);
-                        String typeOnlyQueue = dynamicQueueResolver.resolveTypeOnlyQueue(payload, exchange);
-                        exchange.setProperty("typeOnlyQueue", typeOnlyQueue);
-                    } else {
-                        exchange.setProperty("typeOnlyQueue", null);
-                    }
-                })
+                // ── Step 5b: CBR unroutable → send to exception queue ────────────
+                // When DynamicQueueResolver returns null, routeTarget = DLQ and
+                // sendToExceptionProcessing = true. The message went to DLQ in
+                // Step 5 — this wireTap also sends the structured exception JSON
+                // to COMMON.EXCEPTION.SERVICE.IN so ExceptionRoute can persist
+                // to MongoDB and trigger AI analysis + email.
+                // This path does NOT go through onException so the wireTap must
+                // be explicit here.
                 .choice()
-                .when(exchange -> exchange.getProperty("typeOnlyQueue") != null)
-                .wireTap("activemq:${exchangeProperty.typeOnlyQueue}")
+                .when(exchange -> Boolean.TRUE.equals(
+                        exchange.getProperty("sendToExceptionProcessing", Boolean.class)))
+                .wireTap("activemq:" + exceptionQueue)
+                .onPrepare(ex -> {
+                    String json = exceptionJsonBuilder.build(ex);
+                    ex.getIn().setBody(json);
+                })
                 .end()
-                .log("Type-only copy sent to ${exchangeProperty.typeOnlyQueue} (async)")
+                .log("CBR unroutable — exception dispatched to ExceptionRoute (async)")
                 .end()
 
-                // ── Step 6: EXIT audit — message leaving this route leg ───────────
-                // eventTimestamp IS populated — message has been forwarded
+                // ── Step 6: EXIT audit — only fires on successful routing ──────────
+                // Guarded by routeTarget check — if message went to DLQ it means
+                // CBR could not resolve a normal exit queue so EXIT audit is skipped.
+                // onException path never reaches here — Camel stops after onException.
+                .choice()
+                .when(exchange -> {
+                    String target = exchange.getProperty("routeTarget", String.class);
+                    String dlq    = dlqQueue;
+                    return target != null && !target.equals(dlq);
+                })
                 .wireTap("activemq:" + auditQueue)
                 .onPrepare(ex -> {
                     String json = auditJsonBuilder.buildExit(ex);
                     ex.getIn().setBody(json);
                 })
                 .end()
-
-                .log("EXIT audit dispatched for leg=${header.CurrentRouteName} (async)");
+                .log("EXIT audit dispatched for leg=${header.CurrentRouteName} (async)")
+                .end();
     }
 }

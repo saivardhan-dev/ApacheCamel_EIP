@@ -12,26 +12,24 @@ import org.springframework.stereotype.Component;
 /**
  * ExceptionRoute
  *
- * Consumes exception messages from COMMON.EXCEPTION.SERVICE.IN.
+ * Consumes failed messages from COMMON.EXCEPTION.SERVICE.IN.
  *
  * Flow:
  * ┌──────────────────────────────────────────────────────────────────────┐
  * │  COMMON.EXCEPTION.SERVICE.IN                                         │
  * │       ↓                                                              │
- * │  ExceptionPersistenceService.save()                                  │
- * │       ↓ returns saved ExceptionDocument (with MongoDB _id)           │
- * │  wireTap fires on separate thread — main thread released             │
+ * │  Step 1: ExceptionPersistenceService.save()                          │
+ * │          ExceptionCode already resolved by ExceptionJsonBuilder      │
+ * │          and embedded in the JSON body — read directly from JSON.    │
+ * │          → persist ExceptionDocument to MongoDB "exceptions"         │
  * │       ↓                                                              │
- * │  ExceptionAnalysisAgent.analyse(document)                          │
- * │       ↓                                                              │
- * │  Anthropic API call → structured analysis JSON                       │
- * │       ↓                                                              │
- * │  MongoDB "exceptions" document updated with aiAnalysis field         │
+ * │  Step 2: wireTap → ExceptionAnalysisAgent.analyse() — async         │
+ * │          → checkAuditHistory    reads EXIT audits from MongoDB       │
+ * │          → checkExceptionDetail reads exception from MongoDB         │
+ * │          → AI produces structured analysis                           │
+ * │          → MongoDB exception document updated with aiAnalysis        │
+ * │          → NotificationService sends email via Gmail SMTP            │
  * └──────────────────────────────────────────────────────────────────────┘
- *
- * The AI analysis runs on a separate wireTap thread so the consumer thread
- * is released immediately after persistence — a slow or unavailable
- * Anthropic API never blocks the exception consumer.
  */
 @Slf4j
 @Component
@@ -52,34 +50,47 @@ public class ExceptionRoute extends RouteBuilder {
                 .routeId("exception-consumer-route")
                 .log("EXCEPTION received → persisting to MongoDB")
 
-                // ── Step 1: Parse JSON and save to MongoDB — synchronous ───────────
-                // Returns the saved document with its MongoDB _id so the AI service
-                // can update the same document after analysis.
+                // ── Step 1: Persist to MongoDB ────────────────────────────────────
                 .process(exchange -> {
                     String body = exchange.getIn().getBody(String.class);
                     ExceptionDocument saved = exceptionPersistenceService.save(body);
 
-                    // Pass the saved document as an exchange property so wireTap
-                    // onPrepare can read it on the separate thread
+                    if (saved == null) {
+                        log.error("[ExceptionRoute] ExceptionPersistenceService returned null " +
+                                "— body may be null or malformed. Body='{}'", body);
+                        return;
+                    }
+
                     exchange.setProperty("savedExceptionDocument", saved);
+
+                    log.info("[ExceptionRoute] Persisted — id='{}' msgId='{}' code='{}'",
+                            saved.getId(),
+                            saved.getOriginalMessageId(),
+                            saved.getExceptionCode());
                 })
 
-                .log("EXCEPTION persisted → triggering AI analysis (async)")
+                .log("EXCEPTION persisted → triggering AI analysis from MongoDB (async)")
 
-                // ── Step 2: AI Analysis — async via wireTap ───────────────────────
-                // "log:ai-analysis" is a no-op endpoint — wireTap just needs a valid
-                // URI. The real work happens in onPrepare on a separate thread.
-                // If Anthropic API is slow (up to 30s), the consumer thread is
-                // completely unaffected — it is already released.
+                // ── Step 2: AI Analysis — async wireTap ───────────────────────────
+                // Fires on separate thread — consumer thread released immediately.
+                // Agent queries MongoDB using originalMessageId:
+                //   checkAuditHistory    → "audits"     collection (EXIT records only)
+                //   checkExceptionDetail → "exceptions" collection
                 .wireTap("log:ai-analysis")
                 .onPrepare(ex -> {
-                    ExceptionDocument doc = ex.getProperty(
+                    ExceptionDocument saved = ex.getProperty(
                             "savedExceptionDocument", ExceptionDocument.class);
-                    if (doc != null) {
-                        exceptionAnalysisAgent.analyse(doc);
-                    } else {
-                        log.warn("[ExceptionRoute] savedExceptionDocument is null — skipping AI analysis");
+
+                    if (saved == null) {
+                        log.warn("[ExceptionRoute] savedExceptionDocument is null " +
+                                "— skipping AI analysis");
+                        return;
                     }
+
+                    log.info("[ExceptionRoute] AI analysis starting — msgId='{}'",
+                            saved.getOriginalMessageId());
+
+                    exceptionAnalysisAgent.analyse(saved);
                 })
                 .end()
 

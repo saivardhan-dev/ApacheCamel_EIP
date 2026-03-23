@@ -224,7 +224,7 @@ public class ExceptionAnalysisAgent {
 
                 Your job is to analyse exceptions that occur during message routing and produce \
                 a complete diagnosis including:
-                  1. The full message journey — every route leg from source queue to destination
+                  1. The full message journey — every route leg showing the ROUTE NAME and queues
                   2. Exactly where and why the exception occurred
                   3. A clear, actionable fix suggestion for the development or operations team
 
@@ -236,6 +236,14 @@ public class ExceptionAnalysisAgent {
                 history to reconstruct the successful legs of the journey, and the exception \
                 detail to understand the failure.
 
+                IMPORTANT RULES FOR messageJourney:
+                  - Each leg MUST use the exact "routeName" field from the tool results (e.g. "Route1", "Route2")
+                  - Do NOT invent your own leg names like "GATEWAY_TO_CORE" or "CORE_TO_DLQ"
+                  - Use the exact "source" and "target" queue names from the tool results
+                  - Successful legs come from checkAuditHistory (status = "SUCCESS")
+                  - The failed leg comes from checkExceptionDetail (status = "FAILED")
+                  - Always include BOTH the successful legs AND the failed leg in messageJourney
+
                 When you have called both tools and have the full picture, respond ONLY with \
                 a JSON object. Do not include any explanation, markdown, or code fences.
 
@@ -244,18 +252,18 @@ public class ExceptionAnalysisAgent {
                   "messageJourney": [
                     {
                       "routeName": "Route1",
-                      "source": "GATEWAY.ENTRY.WW.SCENARIO1.1.IN",
+                      "source": "GATEWAY.ENTRY.WW.SCENARIO2.1.IN",
                       "target": "CORE.ENTRY.SERVICE.IN",
                       "status": "SUCCESS",
-                      "startTimestamp": "...",
-                      "endTimestamp": "..."
+                      "startTimestamp": "2026-03-18T...",
+                      "endTimestamp": "2026-03-18T..."
                     },
                     {
                       "routeName": "Route2",
                       "source": "CORE.ENTRY.SERVICE.IN",
-                      "target": "GATEWAY.EXIT.WW.SCENARIO1.1.OUT",
+                      "target": "COMMON.DLQ.SERVICE.IN",
                       "status": "FAILED",
-                      "startTimestamp": "...",
+                      "startTimestamp": "2026-03-18T...",
                       "endTimestamp": ""
                     }
                   ],
@@ -395,13 +403,21 @@ public class ExceptionAnalysisAgent {
     JsonNode journeyArr = root.path("messageJourney");
     if (journeyArr.isArray()) {
       for (JsonNode leg : journeyArr) {
-        String status = leg.path("status").asText("UNKNOWN");
-        String icon   = "SUCCESS".equals(status) ? "✅" : "❌";
-        journeyBuilder.append(String.format("%s %s  %s → %s%n",
-                icon,
-                leg.path("routeName").asText(""),
-                leg.path("source").asText(""),
-                leg.path("target").asText("")));
+        String status    = leg.path("status").asText("UNKNOWN");
+        String icon      = "SUCCESS".equals(status) ? "✅" : "❌";
+        String routeName = leg.path("routeName").asText("Unknown");
+        String source    = leg.path("source").asText("?");
+        String target    = leg.path("target").asText("?");
+        String startTs   = leg.path("startTimestamp").asText("");
+        String endTs     = leg.path("endTimestamp").asText("");
+        journeyBuilder.append(String.format(
+                "%s %-8s  %s → %s%n" +
+                        "          Started:  %s%n" +
+                        "          Ended:    %s%n",
+                icon, routeName, source, target,
+                startTs.isEmpty() ? "N/A" : startTs,
+                endTs.isEmpty()   ? "N/A (failed)" : endTs
+        ));
       }
     }
 
