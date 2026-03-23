@@ -3,8 +3,8 @@
 "A config-driven enterprise message routing platform built on Apache Camel — where adding a new scenario, changing routing rules, or supporting a new message structure requires zero Java code changes."
 
 ## Architecture
-```text
 "This platform is inspired by IBM ACE. Every routing decision is driven by Scenarios.json — no Java changes needed."
+```text
 Producer
     ↓
 GATEWAY.ENTRY.WW.SCENARIO2.1.IN  ← entry queue
@@ -91,7 +91,12 @@ Failure Path — Price Below Threshold
 [NotificationService]  Email sent → subject='[LOW] Exception Alert — Route2 | Scenario2'
 ```
 * The DOUBLE rule fired. The message was rejected, sent to DLQ, persisted to MongoDB, and the AI agent analysed the full journey — which routes succeeded, which failed, and why. An email was sent automatically.
+* "Scenario2 accepts both XML and JSON. XML is automatically transformed to JSON via XSLT before CBR routing. The downstream system always receives the same format."
+* "Full observability. Every message is tracked — every route leg, every exception, every AI analysis. All stored in MongoDB."
+* If I want to send a completely different message structure, different field names, different nesting, different exit queue. Zero Java changes required, only Scenarios.json need to be changed. This is what config-driven means.
+  
 ```text
+Summary:
   ✅ Config-driven routing       — Scenarios.json drives everything
   ✅ Dynamic CBR                 — JSONPath rules, any message structure
   ✅ XML + JSON support          — XSLT transformation on Route1
