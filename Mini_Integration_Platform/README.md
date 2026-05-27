@@ -1,4 +1,4 @@
-# Enterprise Integration System
+# Mini Integration Platform
 
 "A config-driven enterprise message routing platform built on Apache Camel — where adding a new scenario, changing routing rules, or supporting a new message structure requires zero Java code changes."
 
